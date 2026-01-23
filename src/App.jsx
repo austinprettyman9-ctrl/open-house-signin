@@ -23,7 +23,9 @@ export default function App() {
 
   // Load leads when viewing dashboard
   useEffect(() => {
+    console.log('Dashboard useEffect triggered:', { currentView, authenticated, listingId });
     if (currentView === 'dashboard' && authenticated) {
+      console.log('Calling loadLeads...');
       loadLeads();
     }
   }, [currentView, authenticated, listingId]);
@@ -45,7 +47,9 @@ export default function App() {
 
   const loadLeads = async () => {
     try {
+      console.log('=== LOADING LEADS ===');
       console.log('Fetching leads for listing_id:', listingId);
+      console.log('Supabase URL:', supabaseUrl);
       
       const { data, error } = await supabase
         .from('leads')
@@ -53,15 +57,20 @@ export default function App() {
         .eq('listing_id', listingId)
         .order('created_at', { ascending: false });
 
+      console.log('Supabase response - data:', data);
+      console.log('Supabase response - error:', error);
+
       if (error) {
         console.error('Error loading leads:', error);
+        alert(`Error loading leads: ${error.message}`);
         return;
       }
 
-      console.log('Loaded leads:', data);
+      console.log('Successfully loaded leads, count:', data?.length || 0);
       setLeads(data || []);
     } catch (err) {
-      console.error('Error loading leads:', err);
+      console.error('Exception while loading leads:', err);
+      alert(`Exception: ${err.message}`);
     }
   };
 
@@ -421,7 +430,7 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {leads.map((lead, idx) => (
+                    {leads.map((lead) => (
                       <tr key={lead.id} style={{ borderBottom: '1px solid #e2e8f0' }}>
                         <td style={{ padding: '16px', fontSize: '14px', color: '#1e293b' }}>{lead.name}</td>
                         <td style={{ padding: '16px', fontSize: '14px', color: '#1e293b' }}>
