@@ -72,7 +72,10 @@ const RESET_SECONDS = 30;
 export default function App() {
   const listingId = getListingId();
 
-  const [view, setView]           = useState('home');
+  // If a listing param is already in the URL, skip home and go to sign-in
+  const [view, setView]           = useState(
+    new URLSearchParams(window.location.search).has('listing') ? 'signin' : 'home'
+  );
   const [authenticated, setAuthenticated] = useState(false);
   const [property, setProperty]   = useState(() => loadLocal(listingId, 'property', DEFAULT_PROPERTY));
   const [docs, setDocs]           = useState(() => loadLocal(listingId, 'docs', DEFAULT_DOCS));
@@ -163,7 +166,7 @@ export default function App() {
   }
 
   // ── Router ────────────────────────────────────────────────────────────────
-  if (view === 'home')        return <ListingsHome allListings={allListings} onAddListing={addListing} onSelect={id => { window.location.href = `${window.location.pathname}?listing=${id}`; }} currentListing={listingId} />;
+  if (view === 'home')        return <ListingsHome allListings={allListings} onAddListing={addListing} onSelect={() => {}} currentListing={listingId} onViewSignIn={() => setView('signin')} />;
   if (view === 'admin_login') return <AdminLogin password={property.admin_password} onSuccess={() => { setAuthenticated(true); setView('dashboard'); }} onBack={() => setView('signin')} />;
   if (view === 'dashboard' && authenticated)  return <Dashboard property={property} leads={leads} loading={leadsLoading} listingId={listingId} onRefresh={fetchLeads} onSettings={() => setView('settings')} onQR={() => setView('qr')} onAnalytics={() => setView('analytics')} onLogout={logout} />;
   if (view === 'settings' && authenticated)   return <SettingsPanel property={property} docs={docs} onSave={(p,d) => { setProperty(p); setDocs(d); setView('dashboard'); }} onBack={() => setView('dashboard')} />;
@@ -177,12 +180,15 @@ export default function App() {
 
 // ─── Listings Home Screen ─────────────────────────────────────────────────────
 
-function ListingsHome({ allListings, onAddListing, onSelect, currentListing }) {
+function ListingsHome({ allListings, onAddListing, onViewSignIn, currentListing }) {
   const [newId, setNewId] = useState('');
   const [showAdd, setShowAdd] = useState(false);
 
   function goSignIn(id) {
-    window.location.href = `${window.location.pathname}?listing=${id}`;
+    // Update the URL param and reload so the correct listing context loads
+    const url = new URL(window.location.href);
+    url.searchParams.set('listing', id);
+    window.location.href = url.toString();
   }
 
   return (
@@ -222,11 +228,11 @@ function ListingsHome({ allListings, onAddListing, onSelect, currentListing }) {
               placeholder="Listing ID (e.g. 1234MainSt)"
               value={newId}
               onChange={e => setNewId(e.target.value.replace(/\s/g, ''))}
-              onKeyDown={e => { if (e.key === 'Enter') { onAddListing(newId); setNewId(''); setShowAdd(false); }}}
+              onKeyDown={e => { if (e.key === 'Enter') { onAddListing(newId); goSignIn(newId); }}}
               autoFocus
             />
-            <button className="btn-primary-sm" onClick={() => { onAddListing(newId); setNewId(''); setShowAdd(false); }}>
-              <Plus size={14}/> Create
+            <button className="btn-primary-sm" onClick={() => { onAddListing(newId); goSignIn(newId); }}>
+              <Plus size={14}/> Create &amp; Open
             </button>
             <button className="btn-icon" onClick={() => setShowAdd(false)}><X size={14}/></button>
           </div>
