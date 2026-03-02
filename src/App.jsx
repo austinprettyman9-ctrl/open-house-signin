@@ -44,10 +44,10 @@ const DEFAULT_PROPERTY = {
   description: 'Beautiful home in a quiet neighborhood with mountain views, updated kitchen, and spacious backyard.',
   open_house_date: 'Saturday, Jan 25th',
   open_house_time: '1:00 PM – 4:00 PM',
-  agent_name: 'Jane Smith',
-  agent_phone: '(928) 555-0100',
-  agent_email: 'jane@realestate.com',
-  agent_brokerage: 'Premier Realty',
+  agent_name: 'Austin Prettyman',
+  agent_phone: '928-710-8027',
+  agent_email: 'austinprettyman9@gmail.com',
+  agent_brokerage: '',
   hero_image: '',
 };
 
