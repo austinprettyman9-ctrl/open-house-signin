@@ -69,18 +69,8 @@ export default function App() {
   const [leadsLoading, setLeadsLoading] = useState(false);
   const [signedInVisitor, setSignedInVisitor] = useState(null);
 
-  // Secret double-click hotspot counter
-  const hotspotClicks = useRef(0);
-  const hotspotTimer = useRef(null);
-
-  function handleHotspot() {
-    hotspotClicks.current += 1;
-    clearTimeout(hotspotTimer.current);
-    hotspotTimer.current = setTimeout(() => { hotspotClicks.current = 0; }, 600);
-    if (hotspotClicks.current >= 2) {
-      hotspotClicks.current = 0;
-      setView('admin_login');
-    }
+  function goToAdmin() {
+    setView('admin_login');
   }
 
   // Persist property + docs whenever they change
@@ -164,7 +154,7 @@ export default function App() {
       visitor={signedInVisitor}
       property={property}
       docs={docs}
-      onBack={() => setView('signin')}
+      onBack={() => { setSignedInVisitor(null); setView('signin'); }}
     />
   );
 
@@ -173,18 +163,17 @@ export default function App() {
     <SignInForm
       property={property}
       onSubmit={submitLead}
-      onHotspot={handleHotspot}
+      onAdminClick={goToAdmin}
     />
   );
 }
 
 // ─── Sign-In Form ─────────────────────────────────────────────────────────────
 
-function SignInForm({ property, onSubmit, onHotspot }) {
+function SignInForm({ property, onSubmit, onAdminClick }) {
   const [form, setForm] = useState({ name: '', email: '', phone: '' });
   const [errors, setErrors] = useState({});
   const [submitting, setSubmitting] = useState(false);
-  const [submitted, setSubmitted] = useState(false);
 
   function validate() {
     const e = {};
@@ -289,23 +278,51 @@ function SignInForm({ property, onSubmit, onHotspot }) {
             </div>
           </div>
         )}
-      </div>
 
-      {/* Secret admin hotspot */}
-      <div className="admin-hotspot" onClick={onHotspot} />
+        {/* Admin link */}
+        <div className="admin-footer-link">
+          <button className="admin-tiny-btn" onClick={onAdminClick}>
+            <Settings size={11}/> Agent Login
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
 
 // ─── Thank You / Property Details ─────────────────────────────────────────────
 
+const RESET_SECONDS = 30;
+
 function ThankYou({ visitor, property, docs, onBack }) {
+  const [countdown, setCountdown] = useState(RESET_SECONDS);
+
+  // Auto-reset countdown
+  useEffect(() => {
+    if (countdown <= 0) { onBack(); return; }
+    const t = setTimeout(() => setCountdown(c => c - 1), 1000);
+    return () => clearTimeout(t);
+  }, [countdown]);
+
+  // Reset timer whenever user taps anywhere on the page
+  function handleActivity() {
+    setCountdown(RESET_SECONDS);
+  }
+
   return (
-    <div className="thankyou-page">
+    <div className="thankyou-page" onClick={handleActivity} onTouchStart={handleActivity}>
       <div className="thankyou-header">
         <div className="check-circle"><Check size={28} strokeWidth={3}/></div>
         <h2>Thanks, {visitor?.name?.split(' ')[0]}!</h2>
         <p>You're signed in. Enjoy the open house!</p>
+        {/* Countdown bar */}
+        <div className="countdown-wrap">
+          <div
+            className="countdown-bar"
+            style={{ width: `${(countdown / RESET_SECONDS) * 100}%` }}
+          />
+        </div>
+        <p className="countdown-label">Returning to sign-in in {countdown}s — tap anywhere to reset timer</p>
       </div>
 
       <div className="property-detail-card">

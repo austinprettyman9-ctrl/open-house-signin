@@ -219,12 +219,25 @@ textarea { resize: vertical; }
 }
 .contact-link:hover { border-color: var(--blue); color: var(--blue); }
 
-/* Secret hotspot */
-.admin-hotspot {
-  position: fixed; bottom: 0; right: 0;
-  width: 50px; height: 50px;
-  cursor: default;
+/* Admin footer link */
+.admin-footer-link {
+  text-align: center;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
 }
+.admin-tiny-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 6px 12px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  font-size: 0.75rem;
+  color: var(--slate-lt);
+  cursor: pointer;
+  transition: all .15s;
+}
+.admin-tiny-btn:hover { color: var(--slate-md); border-color: #94a3b8; background: var(--bg); }
 
 /* ── Thank You Page ─────────────────────────────────────────────────────────── */
 .thankyou-page {
@@ -236,7 +249,7 @@ textarea { resize: vertical; }
 .thankyou-header {
   background: linear-gradient(135deg, #16a34a, #15803d);
   color: var(--white);
-  padding: 40px 24px 32px;
+  padding: 40px 24px 28px;
   text-align: center;
 }
 .check-circle {
@@ -248,6 +261,27 @@ textarea { resize: vertical; }
 }
 .thankyou-header h2 { font-size: 1.6rem; margin-bottom: 6px; }
 .thankyou-header p { opacity: .85; font-size: 0.95rem; }
+
+/* Countdown bar */
+.countdown-wrap {
+  width: 100%; max-width: 320px;
+  height: 4px;
+  background: rgba(255,255,255,.25);
+  border-radius: 4px;
+  margin: 14px auto 6px;
+  overflow: hidden;
+}
+.countdown-bar {
+  height: 100%;
+  background: rgba(255,255,255,.85);
+  border-radius: 4px;
+  transition: width 1s linear;
+}
+.countdown-label {
+  font-size: 0.75rem;
+  opacity: .65;
+  margin-top: 2px !important;
+}
 
 .property-detail-card {
   background: var(--white);
