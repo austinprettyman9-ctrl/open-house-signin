@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { supabase } from './supabase';
 import { QRCodeCanvas } from 'qrcode.react';
 import emailjs from '@emailjs/browser';
@@ -11,18 +11,18 @@ import {
   ChevronRight, Bed, Bath, Maximize, Calendar, Clock,
   Printer, Trash2, Plus, ArrowLeft, RefreshCw, Star,
   MessageSquare, ChevronLeft, BarChart2, Palette, Lock,
-  List, AlertCircle, CheckCircle, Image
+  List, AlertCircle, CheckCircle, Image, Upload, Link,
+  Clipboard, Scan, Sparkles, Loader, Camera
 } from 'lucide-react';
 
-// ─── EmailJS Config (fill in your IDs from emailjs.com) ─────────────────────
-const EMAILJS_SERVICE_ID  = 'YOUR_SERVICE_ID';
-const EMAILJS_AGENT_TEMPLATE = 'YOUR_AGENT_TEMPLATE_ID';   // notifies you
-const EMAILJS_VISITOR_TEMPLATE = 'YOUR_VISITOR_TEMPLATE_ID'; // thanks visitor
-const EMAILJS_PUBLIC_KEY  = 'YOUR_PUBLIC_KEY';
-const EMAILJS_ENABLED = false; // ← flip to true once you add your IDs above
+// ─── EmailJS Config ──────────────────────────────────────────────────────────
+const EMAILJS_SERVICE_ID     = 'YOUR_SERVICE_ID';
+const EMAILJS_AGENT_TEMPLATE = 'YOUR_AGENT_TEMPLATE_ID';
+const EMAILJS_VISITOR_TEMPLATE = 'YOUR_VISITOR_TEMPLATE_ID';
+const EMAILJS_PUBLIC_KEY     = 'YOUR_PUBLIC_KEY';
+const EMAILJS_ENABLED        = false;
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 function getListingId() {
   const p = new URLSearchParams(window.location.search);
   return p.get('listing') || 'default';
@@ -59,32 +59,126 @@ const DEFAULT_PROPERTY = {
   agent_email: 'austinprettyman9@gmail.com',
   agent_brokerage: '',
   hero_image: '',
-  photos: '',          // comma-separated URLs
+  photos: '',
   brand_color: '#2563eb',
   admin_password: 'openhouse2026',
 };
 const DEFAULT_DOCS = [];
-
 const RESET_SECONDS = 30;
 
-// ─── Main App ────────────────────────────────────────────────────────────────
+// ─── MLS Parser ──────────────────────────────────────────────────────────────
+// Extracts fields from raw MLS text using pattern matching
+function parseMlsText(text) {
+  const t = text;
+  const found = {};
 
+  // ── Price ──
+  const priceMatch = t.match(/(?:list(?:ing)?\s*price|asking\s*price|price)[:\s]*\$?([\d,]+(?:\.\d{2})?)/i)
+    || t.match(/\$\s*([\d,]{5,})/);
+  if (priceMatch) found.price = '$' + priceMatch[1].replace(/,/g, '').replace(/(\d)(?=(\d{3})+$)/g, '$1,');
+
+  // ── Beds ──
+  const bedMatch = t.match(/(\d+(?:\.\d)?)\s*(?:bed(?:room)?s?|br|bd)/i)
+    || t.match(/bed(?:room)?s?[:\s]+(\d+)/i);
+  if (bedMatch) found.bedrooms = bedMatch[1];
+
+  // ── Baths ──
+  const bathMatch = t.match(/(\d+(?:\.\d)?)\s*(?:bath(?:room)?s?|ba)\b/i)
+    || t.match(/bath(?:room)?s?[:\s]+(\d+(?:\.\d)?)/i);
+  if (bathMatch) found.bathrooms = bathMatch[1];
+
+  // ── Sqft ──
+  const sqftMatch = t.match(/(\d[\d,]+)\s*(?:sq\.?\s*ft|square\s*feet?|sqft)/i)
+    || t.match(/(?:sq\.?\s*ft|square\s*feet?|sqft)[:\s]+([\d,]+)/i);
+  if (sqftMatch) found.sqft = sqftMatch[1].replace(/,/g,'').replace(/(\d)(?=(\d{3})+$)/g,'$1,');
+
+  // ── Address ──
+  const addrMatch = t.match(/(?:address|property\s*address|location)[:\s]+([^\n,]+)/i)
+    || t.match(/(\d{2,5}\s+[A-Za-z0-9 ]+(?:St|Ave|Blvd|Dr|Rd|Ln|Ct|Way|Pl|Circle|Trail|Trl|Loop|Hwy)[^,\n]*)/i);
+  if (addrMatch) found.address = addrMatch[1].trim();
+
+  // ── City/State/ZIP ──
+  const cityMatch = t.match(/(?:city|location)[:\s]+([A-Za-z\s]+,\s*[A-Z]{2}\s*\d{5})/i)
+    || t.match(/([A-Za-z\s]+,\s*[A-Z]{2}\s+\d{5})/);
+  if (cityMatch) found.city = cityMatch[1].trim();
+
+  // ── Description / Remarks ──
+  const descMatch = t.match(/(?:remarks?|description|public\s*remarks?|agent\s*remarks?)[:\s]+([^\n]{30,})/i);
+  if (descMatch) found.description = descMatch[1].trim().replace(/\s+/g, ' ');
+
+  // ── Agent Name ──
+  const agentMatch = t.match(/(?:listing\s*agent|agent\s*name|presented\s*by|listed\s*by)[:\s]+([A-Za-z\s,.]+)/i);
+  if (agentMatch) found.agent_name = agentMatch[1].trim().replace(/,$/, '');
+
+  // ── Agent Phone ──
+  const phoneMatch = t.match(/(?:agent\s*phone|phone|cell|mobile|contact)[:\s]+([\d\s\-\(\)\.+]{10,})/i)
+    || t.match(/(\(?\d{3}\)?[\s\-\.]?\d{3}[\s\-\.]\d{4})/);
+  if (phoneMatch) found.agent_phone = phoneMatch[1].trim().replace(/\s+/g,' ');
+
+  // ── Agent Email ──
+  const emailMatch = t.match(/[\w.\-]+@[\w.\-]+\.[a-z]{2,}/i);
+  if (emailMatch) found.agent_email = emailMatch[0];
+
+  // ── Brokerage ──
+  const brokerMatch = t.match(/(?:brokerage|broker|office|firm)[:\s]+([^\n]+)/i);
+  if (brokerMatch) found.agent_brokerage = brokerMatch[1].trim();
+
+  // ── Open House Date ──
+  const ohDateMatch = t.match(/(?:open\s*house)[:\s]+([^\n,]+)/i);
+  if (ohDateMatch) found.open_house_date = ohDateMatch[1].trim();
+
+  // ── Open House Time ──
+  const ohTimeMatch = t.match(/(\d{1,2}(?::\d{2})?\s*(?:AM|PM)\s*[–\-to]+\s*\d{1,2}(?::\d{2})?\s*(?:AM|PM))/i);
+  if (ohTimeMatch) found.open_house_time = ohTimeMatch[1].trim();
+
+  return found;
+}
+
+// ─── PDF Text Extractor ──────────────────────────────────────────────────────
+async function extractTextFromPdf(file) {
+  try {
+    const pdfjsLib = await import('pdfjs-dist');
+    pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
+    const arrayBuffer = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    let fullText = '';
+    for (let i = 1; i <= Math.min(pdf.numPages, 5); i++) {
+      const page = await pdf.getPage(i);
+      const content = await page.getTextContent();
+      fullText += content.items.map(item => item.str).join(' ') + '\n';
+    }
+    return fullText;
+  } catch (err) {
+    console.error('PDF parse error:', err);
+    return null;
+  }
+}
+
+// ─── Image → Base64 helper ───────────────────────────────────────────────────
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+// ─── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
   const listingId = getListingId();
 
-  // If a listing param is already in the URL, skip home and go to sign-in
-  const [view, setView]           = useState(
+  const [view, setView] = useState(
     new URLSearchParams(window.location.search).has('listing') ? 'signin' : 'home'
   );
   const [authenticated, setAuthenticated] = useState(false);
-  const [property, setProperty]   = useState(() => loadLocal(listingId, 'property', DEFAULT_PROPERTY));
-  const [docs, setDocs]           = useState(() => loadLocal(listingId, 'docs', DEFAULT_DOCS));
-  const [leads, setLeads]         = useState([]);
+  const [property, setProperty] = useState(() => loadLocal(listingId, 'property', DEFAULT_PROPERTY));
+  const [docs, setDocs]         = useState(() => loadLocal(listingId, 'docs', DEFAULT_DOCS));
+  const [leads, setLeads]       = useState([]);
   const [leadsLoading, setLeadsLoading] = useState(false);
   const [signedInVisitor, setSignedInVisitor] = useState(null);
   const [allListings, setAllListings] = useState(() => loadLocal('global', 'listings', ['default']));
 
-  // Inject brand color CSS var whenever it changes
   useEffect(() => {
     document.documentElement.style.setProperty('--brand', property.brand_color || '#2563eb');
   }, [property.brand_color]);
@@ -107,14 +201,12 @@ export default function App() {
   }
 
   async function submitLead(formData) {
-    // Check if already signed in
     const existing = leads.find(l => l.email?.toLowerCase() === formData.email?.toLowerCase());
     if (existing) {
       setSignedInVisitor({ ...formData, returning: true });
       setView('thankyou');
       return;
     }
-
     const payload = { ...formData, listing_id: listingId };
     const { error } = await supabase.from('leads').insert([payload]);
     if (error) {
@@ -122,35 +214,22 @@ export default function App() {
       local.unshift({ ...payload, id: Date.now(), created_at: new Date().toISOString() });
       saveLocal(listingId, 'local_leads', local);
     }
-
-    // Send emails
     if (EMAILJS_ENABLED) {
-      // Notify agent
       emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_AGENT_TEMPLATE, {
-        agent_name:    property.agent_name,
-        agent_email:   property.agent_email,
-        visitor_name:  formData.name,
-        visitor_email: formData.email,
+        agent_name: property.agent_name, agent_email: property.agent_email,
+        visitor_name: formData.name, visitor_email: formData.email,
         visitor_phone: formData.phone || 'Not provided',
-        interest:      formData.interest || 'Not specified',
-        property:      property.address,
-        time:          new Date().toLocaleString(),
+        interest: formData.interest || 'Not specified',
+        property: property.address, time: new Date().toLocaleString(),
       }, EMAILJS_PUBLIC_KEY).catch(() => {});
-
-      // Thank visitor
       if (formData.email) {
         emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_VISITOR_TEMPLATE, {
-          visitor_name:   formData.name,
-          visitor_email:  formData.email,
-          agent_name:     property.agent_name,
-          agent_phone:    property.agent_phone,
-          agent_email:    property.agent_email,
-          property:       property.address,
-          price:          property.price,
+          visitor_name: formData.name, visitor_email: formData.email,
+          agent_name: property.agent_name, agent_phone: property.agent_phone,
+          agent_email: property.agent_email, property: property.address, price: property.price,
         }, EMAILJS_PUBLIC_KEY).catch(() => {});
       }
     }
-
     setSignedInVisitor(formData);
     setView('thankyou');
   }
@@ -165,27 +244,23 @@ export default function App() {
     saveLocal('global', 'listings', updated);
   }
 
-  // ── Router ────────────────────────────────────────────────────────────────
+  // ── Router ─────────────────────────────────────────────────────────────────
   if (view === 'home')        return <ListingsHome allListings={allListings} onAddListing={addListing} onSelect={() => {}} currentListing={listingId} onViewSignIn={() => setView('signin')} />;
   if (view === 'admin_login') return <AdminLogin password={property.admin_password} onSuccess={() => { setAuthenticated(true); setView('dashboard'); }} onBack={() => setView('signin')} />;
   if (view === 'dashboard' && authenticated)  return <Dashboard property={property} leads={leads} loading={leadsLoading} listingId={listingId} onRefresh={fetchLeads} onSettings={() => setView('settings')} onQR={() => setView('qr')} onAnalytics={() => setView('analytics')} onLogout={logout} />;
-  if (view === 'settings' && authenticated)   return <SettingsPanel property={property} docs={docs} onSave={(p,d) => { setProperty(p); setDocs(d); setView('dashboard'); }} onBack={() => setView('dashboard')} />;
+  if (view === 'settings' && authenticated)   return <SettingsPanel property={property} docs={docs} onSave={(p, d) => { setProperty(p); setDocs(d); setView('dashboard'); }} onBack={() => setView('dashboard')} />;
   if (view === 'qr' && authenticated)         return <QRGenerator listingId={listingId} property={property} onBack={() => setView('dashboard')} />;
   if (view === 'analytics' && authenticated)  return <Analytics leads={leads} property={property} onBack={() => setView('dashboard')} />;
   if (view === 'thankyou')    return <ThankYou visitor={signedInVisitor} property={property} docs={docs} onBack={() => { setSignedInVisitor(null); setView('signin'); }} />;
-
-  // Default: sign-in
   return <SignInForm property={property} leads={leads} onSubmit={submitLead} onAdminClick={() => setView('admin_login')} />;
 }
 
-// ─── Listings Home Screen ─────────────────────────────────────────────────────
-
+// ─── Listings Home ────────────────────────────────────────────────────────────
 function ListingsHome({ allListings, onAddListing, onViewSignIn, currentListing }) {
   const [newId, setNewId] = useState('');
   const [showAdd, setShowAdd] = useState(false);
 
   function goSignIn(id) {
-    // Update the URL param and reload so the correct listing context loads
     const url = new URL(window.location.href);
     url.searchParams.set('listing', id);
     window.location.href = url.toString();
@@ -198,7 +273,6 @@ function ListingsHome({ allListings, onAddListing, onViewSignIn, currentListing 
         <h1>Open House Sign-In</h1>
         <p>Select a listing or create a new one</p>
       </div>
-
       <div className="home-body">
         <div className="listings-grid">
           {allListings.map(id => {
@@ -211,7 +285,7 @@ function ListingsHome({ allListings, onAddListing, onViewSignIn, currentListing 
                   <p className="listing-card-city">{prop.city}</p>
                   <div className="listing-card-meta">
                     <span>{prop.price}</span>
-                    {prop.bedrooms && <span><Bed size={12}/> {prop.bedrooms}</span>}
+                    {prop.bedrooms  && <span><Bed size={12}/> {prop.bedrooms}</span>}
                     {prop.bathrooms && <span><Bath size={12}/> {prop.bathrooms}</span>}
                   </div>
                   <p className="listing-card-id">ID: {id}</p>
@@ -221,7 +295,6 @@ function ListingsHome({ allListings, onAddListing, onViewSignIn, currentListing 
             );
           })}
         </div>
-
         {showAdd ? (
           <div className="add-listing-row">
             <input
@@ -247,10 +320,9 @@ function ListingsHome({ allListings, onAddListing, onViewSignIn, currentListing 
 }
 
 // ─── Sign-In Form ─────────────────────────────────────────────────────────────
-
 function SignInForm({ property, leads, onSubmit, onAdminClick }) {
-  const [form, setForm]       = useState({ name: '', email: '', phone: '', interest: 'browsing', first_time_buyer: false });
-  const [errors, setErrors]   = useState({});
+  const [form, setForm]     = useState({ name: '', email: '', phone: '', interest: 'browsing', first_time_buyer: false });
+  const [errors, setErrors] = useState({});
   const [submitting, setSubmitting] = useState(false);
   const [alreadySeen, setAlreadySeen] = useState(false);
 
@@ -263,8 +335,7 @@ function SignInForm({ property, leads, onSubmit, onAdminClick }) {
 
   function checkEmail(val) {
     if (!val) { setAlreadySeen(false); return; }
-    const found = leads.find(l => l.email?.toLowerCase() === val.toLowerCase());
-    setAlreadySeen(!!found);
+    setAlreadySeen(!!leads.find(l => l.email?.toLowerCase() === val.toLowerCase()));
   }
 
   async function handleSubmit(e) {
@@ -276,7 +347,9 @@ function SignInForm({ property, leads, onSubmit, onAdminClick }) {
     setSubmitting(false);
   }
 
-  const photos = property.photos ? property.photos.split(',').map(s => s.trim()).filter(Boolean) : [];
+  const photos = property.photos
+    ? property.photos.split(',').map(s => s.trim()).filter(Boolean)
+    : [];
 
   return (
     <div className="signin-page">
@@ -302,7 +375,6 @@ function SignInForm({ property, leads, onSubmit, onAdminClick }) {
       <div className="signin-card">
         <h2 className="signin-title">Welcome! Sign In to Continue</h2>
         <p className="signin-sub">Get access to listing details &amp; documents</p>
-
         <form onSubmit={handleSubmit} className="signin-form">
           <div className="field-group">
             <label>Full Name *</label>
@@ -311,7 +383,6 @@ function SignInForm({ property, leads, onSubmit, onAdminClick }) {
               className={errors.name ? 'input-error' : ''}/>
             {errors.name && <span className="error-msg">{errors.name}</span>}
           </div>
-
           <div className="field-group">
             <label>Email Address *</label>
             <div className="input-icon-wrap">
@@ -322,42 +393,34 @@ function SignInForm({ property, leads, onSubmit, onAdminClick }) {
             </div>
             {errors.email && <span className="error-msg">{errors.email}</span>}
           </div>
-
           <div className="field-group">
             <label>Phone Number <span className="optional">(optional)</span></label>
             <input type="tel" placeholder="(555) 000-0000" value={form.phone}
               onChange={e => setForm({...form, phone: e.target.value})}/>
           </div>
-
-          {/* Interest level */}
           <div className="field-group">
             <label>Are you interested in purchasing?</label>
             <div className="interest-grid">
               {[
-                { val: 'just_looking',  label: 'Just Looking',    icon: '👀' },
-                { val: 'browsing',      label: 'Actively Browsing', icon: '🏘️' },
-                { val: 'very_interested', label: 'Very Interested', icon: '🔥' },
-                { val: 'ready_to_buy', label: 'Ready to Buy',    icon: '✅' },
+                { val: 'just_looking',    label: 'Just Looking',     icon: '👀' },
+                { val: 'browsing',        label: 'Actively Browsing', icon: '🏘️' },
+                { val: 'very_interested', label: 'Very Interested',  icon: '🔥' },
+                { val: 'ready_to_buy',   label: 'Ready to Buy',     icon: '✅' },
               ].map(opt => (
-                <button
-                  type="button" key={opt.val}
+                <button type="button" key={opt.val}
                   className={`interest-btn${form.interest === opt.val ? ' active' : ''}`}
-                  onClick={() => setForm({...form, interest: opt.val})}
-                >
+                  onClick={() => setForm({...form, interest: opt.val})}>
                   <span className="interest-emoji">{opt.icon}</span>
                   <span>{opt.label}</span>
                 </button>
               ))}
             </div>
           </div>
-
-          {/* First-time buyer */}
           <label className="checkbox-row">
             <input type="checkbox" checked={form.first_time_buyer}
               onChange={e => setForm({...form, first_time_buyer: e.target.checked})}/>
             <span>I am a first-time home buyer</span>
           </label>
-
           <button type="submit" className="btn-primary" disabled={submitting}
             style={{ background: property.brand_color }}>
             {submitting ? 'Signing in…' : <>View Property Details <ChevronRight size={16}/></>}
@@ -377,7 +440,6 @@ function SignInForm({ property, leads, onSubmit, onAdminClick }) {
             </div>
           </div>
         )}
-
         <div className="admin-footer-link">
           <button className="admin-tiny-btn" onClick={onAdminClick}>
             <Settings size={11}/> Agent Login
@@ -389,7 +451,6 @@ function SignInForm({ property, leads, onSubmit, onAdminClick }) {
 }
 
 // ─── Thank You / Property Details ─────────────────────────────────────────────
-
 function ThankYou({ visitor, property, docs, onBack }) {
   const [countdown, setCountdown] = useState(RESET_SECONDS);
   const [photoIdx, setPhotoIdx]   = useState(0);
@@ -402,14 +463,9 @@ function ThankYou({ visitor, property, docs, onBack }) {
 
   function handleActivity() { setCountdown(RESET_SECONDS); }
 
-  const photos = property.photos ? property.photos.split(',').map(s => s.trim()).filter(Boolean) : [];
-
-  const interestLabels = {
-    just_looking: '👀 Just Looking',
-    browsing: '🏘️ Actively Browsing',
-    very_interested: '🔥 Very Interested',
-    ready_to_buy: '✅ Ready to Buy',
-  };
+  const photos = property.photos
+    ? property.photos.split(',').map(s => s.trim()).filter(Boolean)
+    : [];
 
   return (
     <div className="thankyou-page" onClick={handleActivity} onTouchStart={handleActivity}>
@@ -417,15 +473,13 @@ function ThankYou({ visitor, property, docs, onBack }) {
         <div className="check-circle"><Check size={28} strokeWidth={3}/></div>
         {visitor?.returning
           ? <><h2>Welcome back, {visitor?.name?.split(' ')[0]}!</h2><p>You're already signed in.</p></>
-          : <><h2>Thanks, {visitor?.name?.split(' ')[0]}!</h2><p>You're signed in. Enjoy the open house!</p></>
-        }
+          : <><h2>Thanks, {visitor?.name?.split(' ')[0]}!</h2><p>You're signed in. Enjoy the open house!</p></>}
         <div className="countdown-wrap">
           <div className="countdown-bar" style={{ width: `${(countdown / RESET_SECONDS) * 100}%`, background: 'rgba(255,255,255,.85)' }}/>
         </div>
         <p className="countdown-label">Returning to sign-in in {countdown}s — tap anywhere to reset timer</p>
       </div>
 
-      {/* Photo Gallery */}
       {photos.length > 0 && (
         <div className="photo-gallery">
           <img src={photos[photoIdx]} alt={`Photo ${photoIdx + 1}`} className="gallery-img"/>
@@ -472,14 +526,12 @@ function ThankYou({ visitor, property, docs, onBack }) {
             </div>
           )}
         </div>
-
         {docs?.filter(d => d.url).length > 0 && (
           <div className="docs-section">
             <h3 className="section-title"><FileText size={16}/> Documents</h3>
             <div className="docs-list">
               {docs.filter(d => d.url).map((doc, i) => (
-                <a key={i} href={doc.url} target="_blank" rel="noopener noreferrer" className="doc-link"
-                  onClick={handleActivity}>
+                <a key={i} href={doc.url} target="_blank" rel="noopener noreferrer" className="doc-link" onClick={handleActivity}>
                   <FileText size={16}/>
                   <span>{doc.label || 'Document'}</span>
                   <Download size={14} className="doc-dl"/>
@@ -488,7 +540,6 @@ function ThankYou({ visitor, property, docs, onBack }) {
             </div>
           </div>
         )}
-
         {property.agent_name && (
           <div className="agent-card">
             <div className="agent-avatar large" style={{ background: property.brand_color }}>{property.agent_name.charAt(0)}</div>
@@ -503,7 +554,6 @@ function ThankYou({ visitor, property, docs, onBack }) {
           </div>
         )}
       </div>
-
       <button className="btn-ghost back-btn" onClick={onBack}>
         <ArrowLeft size={14}/> Sign in another person
       </button>
@@ -512,7 +562,6 @@ function ThankYou({ visitor, property, docs, onBack }) {
 }
 
 // ─── Admin Login ──────────────────────────────────────────────────────────────
-
 function AdminLogin({ password: correctPassword, onSuccess, onBack }) {
   const [password, setPassword] = useState('');
   const [show, setShow]         = useState(false);
@@ -520,8 +569,8 @@ function AdminLogin({ password: correctPassword, onSuccess, onBack }) {
 
   function handleLogin(e) {
     e.preventDefault();
-    if (password === correctPassword) { onSuccess(); }
-    else { setError('Incorrect password'); }
+    if (password === correctPassword) onSuccess();
+    else setError('Incorrect password');
   }
 
   return (
@@ -549,7 +598,6 @@ function AdminLogin({ password: correctPassword, onSuccess, onBack }) {
 }
 
 // ─── Admin Dashboard ──────────────────────────────────────────────────────────
-
 function Dashboard({ property, leads, loading, listingId, onRefresh, onSettings, onQR, onAnalytics, onLogout }) {
   const [selectedLead, setSelectedLead] = useState(null);
   const [filter, setFilter] = useState('all');
@@ -567,12 +615,12 @@ function Dashboard({ property, leads, loading, listingId, onRefresh, onSettings,
   }
 
   const FILTERS = [
-    { val: 'all',           label: 'All' },
-    { val: 'ready_to_buy',  label: '✅ Ready' },
+    { val: 'all',             label: 'All' },
+    { val: 'ready_to_buy',   label: '✅ Ready' },
     { val: 'very_interested', label: '🔥 Hot' },
-    { val: 'browsing',      label: '🏘️ Browsing' },
-    { val: 'just_looking',  label: '👀 Looking' },
-    { val: 'first_time',    label: '⭐ First-Time' },
+    { val: 'browsing',        label: '🏘️ Browsing' },
+    { val: 'just_looking',   label: '👀 Looking' },
+    { val: 'first_time',     label: '⭐ First-Time' },
   ];
 
   const filtered = leads.filter(l => {
@@ -601,9 +649,7 @@ function Dashboard({ property, leads, loading, listingId, onRefresh, onSettings,
           <button className="btn-icon danger" title="Logout" onClick={onLogout}><LogOut size={18}/></button>
         </div>
       </header>
-
       <div className="admin-body">
-        {/* Stat cards */}
         <div className="stat-cards">
           <div className="stat-card" style={{ borderLeftColor: property.brand_color }}>
             <Users size={22} style={{ color: property.brand_color }}/>
@@ -618,15 +664,12 @@ function Dashboard({ property, leads, loading, listingId, onRefresh, onSettings,
             <div><p className="stat-num">{leads.filter(l => l.first_time_buyer).length}</p><p className="stat-label">First-Time Buyers</p></div>
           </div>
         </div>
-
-        {/* EmailJS notice if not configured */}
         {!EMAILJS_ENABLED && (
           <div className="info-banner">
             <AlertCircle size={15}/>
             <span>Email notifications are disabled. <a href="https://emailjs.com" target="_blank" rel="noreferrer">Set up EmailJS</a> and add your IDs to App.jsx to enable them.</span>
           </div>
         )}
-
         <div className="leads-card">
           <div className="leads-card-header">
             <h2>Leads <span className="badge">{leads.length}</span></h2>
@@ -635,8 +678,6 @@ function Dashboard({ property, leads, loading, listingId, onRefresh, onSettings,
               <button className="btn-primary-sm" onClick={exportCSV} disabled={!leads.length}><Download size={14}/> CSV</button>
             </div>
           </div>
-
-          {/* Filter tabs */}
           <div className="filter-tabs">
             {FILTERS.map(f => (
               <button key={f.val} className={`filter-tab${filter === f.val ? ' active' : ''}`}
@@ -646,7 +687,6 @@ function Dashboard({ property, leads, loading, listingId, onRefresh, onSettings,
               </button>
             ))}
           </div>
-
           {loading ? (
             <div className="empty-state"><RefreshCw size={24} className="spin"/> Loading…</div>
           ) : filtered.length === 0 ? (
@@ -663,10 +703,7 @@ function Dashboard({ property, leads, loading, listingId, onRefresh, onSettings,
                       <td className="lead-num">{i + 1}</td>
                       <td className="lead-name">
                         <div className="lead-avatar" style={{ background: property.brand_color }}>{l.name?.charAt(0)?.toUpperCase()}</div>
-                        <div>
-                          {l.name}
-                          {l.first_time_buyer && <span className="ftb-badge">1st time</span>}
-                        </div>
+                        <div>{l.name}{l.first_time_buyer && <span className="ftb-badge">1st time</span>}</div>
                       </td>
                       <td><a href={`mailto:${l.email}`} className="table-link" onClick={e => e.stopPropagation()}>{l.email}</a></td>
                       <td>{l.phone || <span className="muted">—</span>}</td>
@@ -677,12 +714,7 @@ function Dashboard({ property, leads, loading, listingId, onRefresh, onSettings,
                           </span>
                         )}
                       </td>
-                      <td>
-                        {l.notes
-                          ? <span className="has-note"><MessageSquare size={13}/></span>
-                          : <span className="add-note muted"><Plus size={12}/> note</span>
-                        }
-                      </td>
+                      <td>{l.notes ? <span className="has-note"><MessageSquare size={13}/></span> : <span className="add-note muted"><Plus size={12}/> note</span>}</td>
                       <td className="muted">{new Date(l.created_at).toLocaleString()}</td>
                     </tr>
                   ))}
@@ -692,7 +724,6 @@ function Dashboard({ property, leads, loading, listingId, onRefresh, onSettings,
           )}
         </div>
       </div>
-
       {selectedLead && (
         <LeadModal lead={selectedLead} brandColor={property.brand_color}
           onClose={() => setSelectedLead(null)}
@@ -706,12 +737,11 @@ function Dashboard({ property, leads, loading, listingId, onRefresh, onSettings,
   );
 }
 
-// ─── Lead Modal (Notes) ───────────────────────────────────────────────────────
-
+// ─── Lead Modal ───────────────────────────────────────────────────────────────
 function LeadModal({ lead, brandColor, onClose, onSaveNote }) {
-  const [note, setNote]   = useState(lead.notes || '');
+  const [note, setNote]     = useState(lead.notes || '');
   const [saving, setSaving] = useState(false);
-  const [saved, setSaved]  = useState(false);
+  const [saved, setSaved]   = useState(false);
 
   async function handleSave() {
     setSaving(true);
@@ -733,18 +763,15 @@ function LeadModal({ lead, brandColor, onClose, onSaveNote }) {
           </div>
           <button className="btn-icon modal-close" onClick={onClose}><X size={16}/></button>
         </div>
-
         <div className="modal-body">
           <div className="modal-row"><Mail size={14}/> <a href={`mailto:${lead.email}`} className="table-link">{lead.email}</a></div>
           {lead.phone && <div className="modal-row"><Phone size={14}/> <a href={`tel:${lead.phone}`} className="table-link">{lead.phone}</a></div>}
           {lead.interest && <div className="modal-row"><Star size={14}/> {interestLabel[lead.interest] || lead.interest}</div>}
           <div className="modal-row"><Clock size={14}/> Signed in {new Date(lead.created_at).toLocaleString()}</div>
-
           <div className="field-group" style={{ marginTop: 16 }}>
             <label><MessageSquare size={13}/> Private Notes</label>
             <textarea rows={4} placeholder="Add a private note about this lead…" value={note} onChange={e => setNote(e.target.value)}/>
           </div>
-
           <button className="btn-primary" style={{ background: brandColor }} onClick={handleSave} disabled={saving}>
             {saved ? <><Check size={14}/> Saved!</> : saving ? 'Saving…' : <><Save size={14}/> Save Note</>}
           </button>
@@ -755,19 +782,16 @@ function LeadModal({ lead, brandColor, onClose, onSaveNote }) {
 }
 
 // ─── Analytics ────────────────────────────────────────────────────────────────
-
 function Analytics({ leads, property, onBack }) {
-  // Sign-ins by hour
   const hourData = Array.from({ length: 24 }, (_, h) => ({
     hour: `${h === 0 ? 12 : h > 12 ? h - 12 : h}${h < 12 ? 'am' : 'pm'}`,
     count: leads.filter(l => new Date(l.created_at).getHours() === h).length
   })).filter((_, h) => leads.some(l => new Date(l.created_at).getHours() === h));
 
-  // By interest
   const interestData = [
-    { name: '✅ Ready', count: leads.filter(l => l.interest === 'ready_to_buy').length },
-    { name: '🔥 Hot',   count: leads.filter(l => l.interest === 'very_interested').length },
-    { name: '🏘️ Browse', count: leads.filter(l => l.interest === 'browsing').length },
+    { name: '✅ Ready',    count: leads.filter(l => l.interest === 'ready_to_buy').length },
+    { name: '🔥 Hot',     count: leads.filter(l => l.interest === 'very_interested').length },
+    { name: '🏘️ Browse',  count: leads.filter(l => l.interest === 'browsing').length },
     { name: '👀 Looking', count: leads.filter(l => l.interest === 'just_looking').length },
   ].filter(d => d.count > 0);
 
@@ -785,28 +809,20 @@ function Analytics({ leads, property, onBack }) {
           </div>
         </div>
       </header>
-
       <div className="admin-body">
         <div className="stat-cards">
           <div className="stat-card" style={{ borderLeftColor: property.brand_color }}>
-            <Users size={22} style={{ color: property.brand_color }}/>
-            <div><p className="stat-num">{leads.length}</p><p className="stat-label">Total Leads</p></div>
+            <Users size={22} style={{ color: property.brand_color }}/><div><p className="stat-num">{leads.length}</p><p className="stat-label">Total Leads</p></div>
           </div>
           <div className="stat-card" style={{ borderLeftColor: '#16a34a' }}>
-            <CheckCircle size={22} style={{ color: '#16a34a' }}/>
-            <div><p className="stat-num">{hotLeads.length}</p><p className="stat-label">Hot Leads</p></div>
+            <CheckCircle size={22} style={{ color: '#16a34a' }}/><div><p className="stat-num">{hotLeads.length}</p><p className="stat-label">Hot Leads</p></div>
           </div>
           <div className="stat-card" style={{ borderLeftColor: '#7c3aed' }}>
-            <Star size={22} style={{ color: '#7c3aed' }}/>
-            <div><p className="stat-num">{firstTimers.length}</p><p className="stat-label">First-Time Buyers</p></div>
+            <Star size={22} style={{ color: '#7c3aed' }}/><div><p className="stat-num">{firstTimers.length}</p><p className="stat-label">First-Time Buyers</p></div>
           </div>
         </div>
-
         {leads.length === 0 ? (
-          <div className="analytics-empty">
-            <BarChart2 size={48}/>
-            <p>No data yet — analytics will appear after visitors sign in.</p>
-          </div>
+          <div className="analytics-empty"><BarChart2 size={48}/><p>No data yet — analytics will appear after visitors sign in.</p></div>
         ) : (
           <>
             {hourData.length > 0 && (
@@ -815,15 +831,12 @@ function Analytics({ leads, property, onBack }) {
                 <ResponsiveContainer width="100%" height={200}>
                   <BarChart data={hourData} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9"/>
-                    <XAxis dataKey="hour" tick={{ fontSize: 11 }}/>
-                    <YAxis allowDecimals={false} tick={{ fontSize: 11 }}/>
-                    <Tooltip/>
-                    <Bar dataKey="count" fill={property.brand_color} radius={[4,4,0,0]}/>
+                    <XAxis dataKey="hour" tick={{ fontSize: 11 }}/><YAxis allowDecimals={false} tick={{ fontSize: 11 }}/>
+                    <Tooltip/><Bar dataKey="count" fill={property.brand_color} radius={[4,4,0,0]}/>
                   </BarChart>
                 </ResponsiveContainer>
               </div>
             )}
-
             {interestData.length > 0 && (
               <div className="chart-card">
                 <h3 className="chart-title">Buyer Interest Breakdown</h3>
@@ -832,14 +845,11 @@ function Analytics({ leads, property, onBack }) {
                     <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9"/>
                     <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }}/>
                     <YAxis type="category" dataKey="name" tick={{ fontSize: 11 }}/>
-                    <Tooltip/>
-                    <Bar dataKey="count" fill={property.brand_color} radius={[0,4,4,0]}/>
+                    <Tooltip/><Bar dataKey="count" fill={property.brand_color} radius={[0,4,4,0]}/>
                   </BarChart>
                 </ResponsiveContainer>
               </div>
             )}
-
-            {/* Hot leads list */}
             {hotLeads.length > 0 && (
               <div className="chart-card">
                 <h3 className="chart-title">🔥 Hot Leads to Follow Up</h3>
@@ -867,21 +877,389 @@ function Analytics({ leads, property, onBack }) {
   );
 }
 
-// ─── Settings Panel ───────────────────────────────────────────────────────────
+// ─── MLS Analyzer Modal ───────────────────────────────────────────────────────
+function MlsAnalyzer({ onApply, onClose, brandColor }) {
+  const [mode, setMode]       = useState('paste'); // 'paste' | 'pdf' | 'image'
+  const [text, setText]       = useState('');
+  const [parsing, setParsing] = useState(false);
+  const [result, setResult]   = useState(null);
+  const [applied, setApplied] = useState(false);
+  const [fileName, setFileName] = useState('');
+  const fileRef = useRef(null);
 
+  const FIELD_LABELS = {
+    address: 'Street Address', city: 'City / State / ZIP', price: 'List Price',
+    bedrooms: 'Bedrooms', bathrooms: 'Bathrooms', sqft: 'Square Feet',
+    description: 'Description', agent_name: 'Agent Name', agent_phone: 'Phone',
+    agent_email: 'Email', agent_brokerage: 'Brokerage',
+    open_house_date: 'Open House Date', open_house_time: 'Open House Time',
+  };
+
+  async function analyze() {
+    const src = text.trim();
+    if (!src) return;
+    setParsing(true);
+    setResult(null);
+    await new Promise(r => setTimeout(r, 400)); // brief UX delay
+    const parsed = parseMlsText(src);
+    setResult(Object.keys(parsed).length ? parsed : {});
+    setParsing(false);
+  }
+
+  async function handleFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setFileName(file.name);
+    setParsing(true);
+    setResult(null);
+    setText('');
+
+    if (file.type === 'application/pdf') {
+      const extracted = await extractTextFromPdf(file);
+      if (extracted) {
+        setText(extracted);
+        const parsed = parseMlsText(extracted);
+        setResult(Object.keys(parsed).length ? parsed : {});
+      } else {
+        setResult({});
+      }
+    } else if (file.type.startsWith('image/')) {
+      // For images: convert to base64 and show in text box as note
+      // (OCR would need a cloud service; we fall back to manual paste)
+      const b64 = await fileToBase64(file);
+      setText('');
+      setResult(null);
+      setMode('image_loaded');
+      // store the preview
+      setFileName(b64);
+    }
+    setParsing(false);
+  }
+
+  function handleApply() {
+    if (!result || !Object.keys(result).length) return;
+    onApply(result);
+    setApplied(true);
+    setTimeout(() => { setApplied(false); onClose(); }, 1200);
+  }
+
+  const fieldCount = result ? Object.keys(result).length : 0;
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="mls-modal" onClick={e => e.stopPropagation()}>
+        {/* Header */}
+        <div className="mls-modal-header" style={{ background: `linear-gradient(135deg, ${brandColor}dd, ${brandColor})` }}>
+          <div className="mls-modal-title-row">
+            <div className="mls-modal-icon"><Scan size={22}/></div>
+            <div>
+              <h2>MLS Info Sheet Analyzer</h2>
+              <p>Paste MLS text, upload a PDF, or type in details — fields will auto-fill</p>
+            </div>
+            <button className="mls-close-btn" onClick={onClose}><X size={18}/></button>
+          </div>
+          {/* Mode tabs */}
+          <div className="mls-tabs">
+            {[
+              { id: 'paste', icon: <Clipboard size={14}/>, label: 'Paste Text' },
+              { id: 'pdf',   icon: <FileText size={14}/>, label: 'Upload PDF' },
+            ].map(m => (
+              <button key={m.id}
+                className={`mls-tab${mode === m.id || (mode === 'image_loaded' && m.id === 'pdf') ? ' active' : ''}`}
+                onClick={() => { setMode(m.id); setResult(null); setText(''); setFileName(''); }}>
+                {m.icon} {m.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="mls-modal-body">
+          {/* ── Paste Mode ── */}
+          {mode === 'paste' && (
+            <div className="mls-paste-area">
+              <textarea
+                rows={10}
+                placeholder={`Paste your MLS listing info here…\n\nExamples of what gets detected:\n• Price, Beds, Baths, Sq Ft\n• Address & City/State/ZIP\n• Agent name, phone & email\n• Property description / remarks\n• Open house date & time`}
+                value={text}
+                onChange={e => { setText(e.target.value); setResult(null); }}
+                className="mls-textarea"
+              />
+              <button
+                className="btn-primary mls-analyze-btn"
+                style={{ background: brandColor }}
+                onClick={analyze}
+                disabled={!text.trim() || parsing}>
+                {parsing ? <><Loader size={15} className="spin"/> Analyzing…</> : <><Sparkles size={15}/> Analyze &amp; Fill Fields</>}
+              </button>
+            </div>
+          )}
+
+          {/* ── PDF Mode ── */}
+          {(mode === 'pdf' || mode === 'image_loaded') && (
+            <div className="mls-upload-area">
+              <input ref={fileRef} type="file" accept=".pdf,image/*" style={{ display:'none' }} onChange={handleFile}/>
+              {!fileName || mode === 'pdf' ? (
+                <div className="mls-drop-zone" onClick={() => fileRef.current?.click()}>
+                  <Upload size={32} style={{ color: brandColor, opacity: .7 }}/>
+                  <p className="mls-drop-title">Upload MLS PDF or Image</p>
+                  <p className="mls-drop-sub">Click to browse • PDF text extracted automatically</p>
+                  <button className="btn-outline-sm" type="button" style={{ marginTop:8 }} onClick={e => { e.stopPropagation(); fileRef.current?.click(); }}>
+                    <Upload size={13}/> Choose File
+                  </button>
+                </div>
+              ) : mode === 'image_loaded' ? (
+                <div className="mls-image-preview-wrap">
+                  <img src={fileName} alt="Uploaded MLS" className="mls-image-preview"/>
+                  <div className="mls-image-note">
+                    <AlertCircle size={14}/>
+                    <span>Image uploaded — automatic OCR isn't available in browser mode. Please manually copy the text from your image and switch to <strong>Paste Text</strong> mode, or type the key details below.</span>
+                  </div>
+                  <button className="btn-outline-sm" style={{ marginTop:8 }} onClick={() => { setMode('paste'); setFileName(''); }}>
+                    Switch to Paste Text
+                  </button>
+                </div>
+              ) : null}
+              {parsing && (
+                <div className="mls-loading"><Loader size={20} className="spin" style={{ color: brandColor }}/> <span>Extracting text from PDF…</span></div>
+              )}
+              {text && !parsing && mode !== 'image_loaded' && (
+                <div className="mls-pdf-extracted">
+                  <p className="mls-extracted-label"><CheckCircle size={13} style={{ color:'#16a34a' }}/> PDF text extracted — {text.length} characters</p>
+                  <button className="btn-primary mls-analyze-btn" style={{ background: brandColor }} onClick={analyze} disabled={parsing}>
+                    <Sparkles size={15}/> Analyze &amp; Fill Fields
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── Results ── */}
+          {result !== null && (
+            <div className="mls-results">
+              <div className={`mls-results-header ${fieldCount > 0 ? 'success' : 'warn'}`}>
+                {fieldCount > 0
+                  ? <><CheckCircle size={15}/> Found <strong>{fieldCount} field{fieldCount !== 1 ? 's' : ''}</strong> — review &amp; apply below</>
+                  : <><AlertCircle size={15}/> No recognizable fields detected — try pasting more complete MLS text</>
+                }
+              </div>
+              {fieldCount > 0 && (
+                <>
+                  <div className="mls-fields-grid">
+                    {Object.entries(result).map(([key, val]) => (
+                      <div key={key} className="mls-field-row">
+                        <span className="mls-field-label">{FIELD_LABELS[key] || key}</span>
+                        <span className="mls-field-value">{val}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <button
+                    className="btn-primary"
+                    style={{ background: brandColor, marginTop: 16 }}
+                    onClick={handleApply}>
+                    {applied
+                      ? <><Check size={15}/> Applied!</>
+                      : <><Sparkles size={15}/> Apply {fieldCount} Field{fieldCount !== 1 ? 's' : ''} to Listing</>}
+                  </button>
+                  <p className="mls-apply-note">Only detected fields are updated — empty fields stay as-is.</p>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Enhanced Photo Upload ────────────────────────────────────────────────────
+// Supports: URL input, paste from clipboard (screenshots), file upload, drag-and-drop
+function PhotoUploader({ photos, onChange, brandColor }) {
+  const [urlInput, setUrlInput]     = useState('');
+  const [dragOver, setDragOver]     = useState(false);
+  const [pasteHint, setPasteHint]   = useState(false);
+  const [tab, setTab]               = useState('upload'); // 'upload' | 'url'
+  const fileRef  = useRef(null);
+  const dropRef  = useRef(null);
+
+  // photos is already an array passed in
+  const list = photos; // string[]
+
+  function addUrl() {
+    const urls = urlInput.split('\n').map(s => s.trim()).filter(s => s.startsWith('http'));
+    if (!urls.length) return;
+    onChange([...list, ...urls]);
+    setUrlInput('');
+  }
+
+  function removePhoto(idx) {
+    onChange(list.filter((_, i) => i !== idx));
+  }
+
+  // Convert image file to base64 data URL and add to list
+  async function addImageFile(file) {
+    if (!file || !file.type.startsWith('image/')) return;
+    const b64 = await fileToBase64(file);
+    onChange([...list, b64]);
+  }
+
+  // Handle file input
+  async function handleFileInput(e) {
+    const files = Array.from(e.target.files || []);
+    for (const f of files) await addImageFile(f);
+    e.target.value = '';
+  }
+
+  // Drag-and-drop
+  function handleDragOver(e) { e.preventDefault(); setDragOver(true); }
+  function handleDragLeave()  { setDragOver(false); }
+  async function handleDrop(e) {
+    e.preventDefault(); setDragOver(false);
+    const files = Array.from(e.dataTransfer.files || []);
+    for (const f of files) await addImageFile(f);
+    // Also handle image items from clipboard drag
+    const items = Array.from(e.dataTransfer.items || []);
+    for (const item of items) {
+      if (item.kind === 'string' && item.type === 'text/uri-list') {
+        item.getAsString(url => { if (url.startsWith('http')) onChange(prev => [...prev, url]); });
+      }
+    }
+  }
+
+  // Global paste listener for screenshots (Ctrl+V / Cmd+V)
+  useEffect(() => {
+    function handlePaste(e) {
+      // Only intercept if our drop zone is visible
+      if (!dropRef.current) return;
+      const items = Array.from(e.clipboardData?.items || []);
+      const imageItem = items.find(i => i.type.startsWith('image/'));
+      if (imageItem) {
+        const file = imageItem.getAsFile();
+        if (file) {
+          addImageFile(file);
+          setPasteHint(true);
+          setTimeout(() => setPasteHint(false), 2000);
+        }
+      }
+    }
+    document.addEventListener('paste', handlePaste);
+    return () => document.removeEventListener('paste', handlePaste);
+  }, [list]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return (
+    <div className="photo-uploader">
+      {/* Mode tabs */}
+      <div className="photo-upload-tabs">
+        <button className={`photo-tab${tab === 'upload' ? ' active' : ''}`}
+          onClick={() => setTab('upload')}
+          style={tab === 'upload' ? { color: brandColor, borderBottomColor: brandColor } : {}}>
+          <Upload size={13}/> Upload / Paste
+        </button>
+        <button className={`photo-tab${tab === 'url' ? ' active' : ''}`}
+          onClick={() => setTab('url')}
+          style={tab === 'url' ? { color: brandColor, borderBottomColor: brandColor } : {}}>
+          <Link size={13}/> Add by URL
+        </button>
+      </div>
+
+      {tab === 'upload' && (
+        <div
+          ref={dropRef}
+          className={`photo-drop-zone${dragOver ? ' drag-over' : ''}`}
+          style={dragOver ? { borderColor: brandColor, background: `color-mix(in srgb, ${brandColor} 6%, white)` } : {}}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          onClick={() => fileRef.current?.click()}
+        >
+          <input ref={fileRef} type="file" accept="image/*" multiple style={{ display: 'none' }} onChange={handleFileInput}/>
+          <Camera size={28} style={{ color: brandColor, opacity: .6 }}/>
+          <p className="photo-drop-title">Drop photos here, click to browse, or paste a screenshot</p>
+          <p className="photo-drop-sub">
+            <kbd>Ctrl+V</kbd> / <kbd>⌘+V</kbd> to paste directly from clipboard &nbsp;·&nbsp; JPG, PNG, WEBP supported
+          </p>
+          {pasteHint && (
+            <div className="paste-success"><CheckCircle size={14}/> Screenshot pasted!</div>
+          )}
+        </div>
+      )}
+
+      {tab === 'url' && (
+        <div className="photo-url-area">
+          <textarea
+            rows={4}
+            placeholder={"https://example.com/photo1.jpg\nhttps://example.com/photo2.jpg\n\nOne URL per line"}
+            value={urlInput}
+            onChange={e => setUrlInput(e.target.value)}
+            className="photo-url-textarea"
+          />
+          <button className="btn-primary-sm" style={{ background: brandColor }} onClick={addUrl} disabled={!urlInput.trim()}>
+            <Plus size={14}/> Add URLs
+          </button>
+        </div>
+      )}
+
+      {/* Thumbnail grid */}
+      {list.length > 0 && (
+        <div className="photo-thumb-grid">
+          {list.map((src, i) => (
+            <div key={i} className="photo-thumb-item">
+              <img
+                src={src}
+                alt={`Photo ${i + 1}`}
+                className="photo-thumb-img"
+                onError={e => { e.target.style.opacity = '0.3'; }}
+              />
+              <button className="photo-thumb-remove" onClick={() => removePhoto(i)} title="Remove">
+                <X size={12}/>
+              </button>
+              {i === 0 && <span className="photo-thumb-hero-badge">Hero</span>}
+            </div>
+          ))}
+          {/* Add more button */}
+          <div className="photo-thumb-add" onClick={() => { setTab('upload'); fileRef.current?.click(); }}
+            style={{ borderColor: brandColor, color: brandColor }}>
+            <Plus size={20}/><span>Add</span>
+          </div>
+        </div>
+      )}
+
+      {list.length > 0 && (
+        <p className="photo-count-note">
+          {list.length} photo{list.length !== 1 ? 's' : ''} · First photo is used as the hero banner
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ─── Settings Panel ───────────────────────────────────────────────────────────
 function SettingsPanel({ property, docs, onSave, onBack }) {
-  const [p, setP]       = useState({ ...property });
-  const [d, setD]       = useState(docs.length ? [...docs] : [{ label: '', url: '' }]);
-  const [saved, setSaved] = useState(false);
-  const [tab, setTab]   = useState('property');
+  const [p, setP]             = useState({ ...property });
+  const [d, setD]             = useState(docs.length ? [...docs] : [{ label: '', url: '' }]);
+  const [saved, setSaved]     = useState(false);
+  const [tab, setTab]         = useState('property');
+  const [showMls, setShowMls] = useState(false);
 
   function updateDoc(i, field, val) { const nd=[...d]; nd[i]={...nd[i],[field]:val}; setD(nd); }
-  function addDoc() { setD([...d, { label: '', url: '' }]); }
-  function removeDoc(i) { setD(d.filter((_,idx) => idx !== i)); }
+  function addDoc()    { setD([...d, { label: '', url: '' }]); }
+  function removeDoc(i){ setD(d.filter((_,idx) => idx !== i)); }
 
   function handleSave() {
     onSave(p, d.filter(doc => doc.label || doc.url));
     setSaved(true); setTimeout(() => setSaved(false), 1500);
+  }
+
+  // Convert photo string ↔ array for the PhotoUploader
+  const photoList = p.photos ? p.photos.split(',').map(s => s.trim()).filter(Boolean) : [];
+  function handlePhotosChange(newList) {
+    setP({ ...p, photos: newList.join(','), hero_image: newList[0] || '' });
+  }
+
+  // MLS apply callback
+  function applyMlsFields(fields) {
+    setP(prev => ({ ...prev, ...fields }));
+    setShowMls(false);
+    setTab('property');
   }
 
   const TABS = [
@@ -898,10 +1276,24 @@ function SettingsPanel({ property, docs, onSave, onBack }) {
       <header className="settings-header">
         <button className="btn-icon" onClick={onBack}><ArrowLeft size={18}/></button>
         <h1>Settings</h1>
-        <button className="btn-primary-sm" style={{ background: p.brand_color }} onClick={handleSave}>
-          {saved ? <><Check size={14}/> Saved!</> : <><Save size={14}/> Save</>}
-        </button>
+        <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+          <button className="btn-mls-trigger" style={{ borderColor: p.brand_color, color: p.brand_color }} onClick={() => setShowMls(true)}>
+            <Scan size={14}/> MLS Auto-Fill
+          </button>
+          <button className="btn-primary-sm" style={{ background: p.brand_color }} onClick={handleSave}>
+            {saved ? <><Check size={14}/> Saved!</> : <><Save size={14}/> Save</>}
+          </button>
+        </div>
       </header>
+
+      {/* MLS Analyzer */}
+      {showMls && (
+        <MlsAnalyzer
+          brandColor={p.brand_color}
+          onApply={applyMlsFields}
+          onClose={() => setShowMls(false)}
+        />
+      )}
 
       {/* Tabs */}
       <div className="settings-tabs">
@@ -915,8 +1307,16 @@ function SettingsPanel({ property, docs, onSave, onBack }) {
       </div>
 
       <div className="settings-body">
+
+        {/* ── Property Tab ── */}
         {tab === 'property' && (
           <div className="settings-section">
+            {/* Quick MLS hint banner */}
+            <div className="mls-hint-banner" onClick={() => setShowMls(true)} style={{ borderColor: p.brand_color }}>
+              <Sparkles size={14} style={{ color: p.brand_color }}/>
+              <span>Have an MLS sheet? Click <strong>MLS Auto-Fill</strong> in the header to auto-populate these fields.</span>
+              <ChevronRight size={13} style={{ color: p.brand_color, marginLeft:'auto' }}/>
+            </div>
             <div className="settings-grid">
               <div className="field-group"><label>Street Address</label><input value={p.address} onChange={e=>setP({...p,address:e.target.value})} placeholder="1234 Main St"/></div>
               <div className="field-group"><label>City, State ZIP</label><input value={p.city} onChange={e=>setP({...p,city:e.target.value})} placeholder="Flagstaff, AZ 86001"/></div>
@@ -924,14 +1324,14 @@ function SettingsPanel({ property, docs, onSave, onBack }) {
               <div className="field-group"><label>Bedrooms</label><input value={p.bedrooms} onChange={e=>setP({...p,bedrooms:e.target.value})} placeholder="3"/></div>
               <div className="field-group"><label>Bathrooms</label><input value={p.bathrooms} onChange={e=>setP({...p,bathrooms:e.target.value})} placeholder="2"/></div>
               <div className="field-group"><label>Square Footage</label><input value={p.sqft} onChange={e=>setP({...p,sqft:e.target.value})} placeholder="2,100"/></div>
-              <div className="field-group full"><label>Description</label><textarea rows={3} value={p.description} onChange={e=>setP({...p,description:e.target.value})}/></div>
+              <div className="field-group full"><label>Description / Remarks</label><textarea rows={3} value={p.description} onChange={e=>setP({...p,description:e.target.value})}/></div>
               <div className="field-group"><label>Open House Date</label><input value={p.open_house_date} onChange={e=>setP({...p,open_house_date:e.target.value})} placeholder="Saturday, Jan 25th"/></div>
               <div className="field-group"><label>Open House Time</label><input value={p.open_house_time} onChange={e=>setP({...p,open_house_time:e.target.value})} placeholder="1:00 PM – 4:00 PM"/></div>
-              <div className="field-group full"><label>Hero Image URL <span className="optional">(banner photo)</span></label><input value={p.hero_image} onChange={e=>setP({...p,hero_image:e.target.value})} placeholder="https://…/photo.jpg"/></div>
             </div>
           </div>
         )}
 
+        {/* ── Agent Tab ── */}
         {tab === 'agent' && (
           <div className="settings-section">
             <div className="settings-grid">
@@ -943,10 +1343,11 @@ function SettingsPanel({ property, docs, onSave, onBack }) {
           </div>
         )}
 
+        {/* ── Docs Tab ── */}
         {tab === 'docs' && (
           <div className="settings-section">
             <div className="settings-section-header">
-              <p className="settings-hint">Paste direct links to PDFs (Google Drive, Dropbox, etc.) Visitors see these after signing in.</p>
+              <p className="settings-hint">Paste direct links to PDFs (Google Drive, Dropbox, etc.). Visitors see these after signing in.</p>
               <button className="btn-outline-sm" onClick={addDoc}><Plus size={13}/> Add Doc</button>
             </div>
             {d.map((doc, i) => (
@@ -959,28 +1360,18 @@ function SettingsPanel({ property, docs, onSave, onBack }) {
           </div>
         )}
 
+        {/* ── Photos Tab ── */}
         {tab === 'photos' && (
           <div className="settings-section">
-            <p className="settings-hint">Add photo URLs for the gallery shown to visitors after signing in. One URL per line, or comma-separated.</p>
-            <div className="field-group">
-              <label>Photo URLs</label>
-              <textarea
-                rows={6}
-                placeholder={"https://example.com/photo1.jpg\nhttps://example.com/photo2.jpg"}
-                value={(p.photos||'').replace(/,/g,'\n')}
-                onChange={e => setP({...p, photos: e.target.value.split('\n').map(s=>s.trim()).filter(Boolean).join(',')})}
-              />
-            </div>
-            {p.photos && (
-              <div className="photo-preview-strip">
-                {p.photos.split(',').filter(Boolean).map((url,i) => (
-                  <img key={i} src={url.trim()} alt={`Preview ${i+1}`} className="photo-preview-thumb" onError={e=>e.target.style.display='none'}/>
-                ))}
-              </div>
-            )}
+            <PhotoUploader
+              photos={photoList}
+              onChange={handlePhotosChange}
+              brandColor={p.brand_color}
+            />
           </div>
         )}
 
+        {/* ── Branding Tab ── */}
         {tab === 'branding' && (
           <div className="settings-section">
             <h3 className="settings-section-title"><Palette size={15}/> Brand Color</h3>
@@ -991,8 +1382,7 @@ function SettingsPanel({ property, docs, onSave, onBack }) {
                   className={`color-swatch${p.brand_color === c.value ? ' active' : ''}`}
                   style={{ background: c.value }}
                   onClick={() => setP({...p, brand_color: c.value})}
-                  title={c.name}
-                >
+                  title={c.name}>
                   {p.brand_color === c.value && <Check size={16} color="white" strokeWidth={3}/>}
                 </button>
               ))}
@@ -1007,10 +1397,11 @@ function SettingsPanel({ property, docs, onSave, onBack }) {
           </div>
         )}
 
+        {/* ── Security Tab ── */}
         {tab === 'security' && (
           <div className="settings-section">
             <h3 className="settings-section-title"><Lock size={15}/> Change Admin Password</h3>
-            <p className="settings-hint">Update the password used to access the admin dashboard. Make sure to remember it!</p>
+            <p className="settings-hint">Update the password used to access the admin dashboard.</p>
             <div className="settings-grid">
               <div className="field-group full">
                 <label>New Password</label>
@@ -1022,19 +1413,19 @@ function SettingsPanel({ property, docs, onSave, onBack }) {
             </div>
           </div>
         )}
+
       </div>
     </div>
   );
 }
 
 // ─── QR Generator ─────────────────────────────────────────────────────────────
-
 function QRGenerator({ listingId, property, onBack }) {
-  const qrRef = useRef(null);
-  const base  = window.location.origin + window.location.pathname;
+  const qrRef  = useRef(null);
+  const base   = window.location.origin + window.location.pathname;
   const [customListing, setCustomListing] = useState(listingId === 'default' ? '' : listingId);
-  const [finalUrl, setFinalUrl] = useState(listingId === 'default' ? base : `${base}?listing=${listingId}`);
-  const [qrSize, setQrSize]     = useState(256);
+  const [finalUrl, setFinalUrl]           = useState(listingId === 'default' ? base : `${base}?listing=${listingId}`);
+  const [qrSize, setQrSize]               = useState(256);
 
   function regenerate() {
     const id = customListing.trim() || 'default';
@@ -1076,7 +1467,6 @@ function QRGenerator({ listingId, property, onBack }) {
         <h1>QR Code Generator</h1>
         <div/>
       </header>
-
       <div className="qr-body">
         <div className="qr-card">
           <div ref={qrRef} className="qr-canvas-wrap">
@@ -1088,7 +1478,6 @@ function QRGenerator({ listingId, property, onBack }) {
             <button className="btn-outline" onClick={downloadQR}><Download size={15}/> Download PNG</button>
           </div>
         </div>
-
         <div className="qr-options-card">
           <h3>Listing ID</h3>
           <p className="settings-hint">Each listing ID = separate leads &amp; settings.</p>
