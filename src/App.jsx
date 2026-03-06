@@ -67,85 +67,227 @@ const DEFAULT_DOCS = [];
 const RESET_SECONDS = 30;
 
 // ─── MLS Parser ──────────────────────────────────────────────────────────────
-// Extracts fields from raw MLS text using pattern matching
-function parseMlsText(text) {
-  const t = text;
+// Extracts fields from raw MLS text (paste, PDF extract, or FlexMLS sheet)
+// Handles: labeled paste text, FlexMLS PDF (single-line double-space delimited),
+// FlexMLS grid layout, and raw blob copy-paste.
+function parseMlsText(rawText) {
+  // ── Step 1: Normalize ──────────────────────────────────────────────────────
+  // pdfjs-dist extracts all text on a page into one flat string joined by spaces.
+  // FlexMLS PDFs use 2+ spaces as field separators. Convert them to newlines so
+  // all the label-based regexes work the same way as on pasted/typed text.
+  let t = rawText
+    .replace(/\r\n/g, '\n')          // normalize CRLF
+    .replace(/  +/g, '\n')            // 2+ spaces → newline (FlexMLS PDF)
+    .replace(/\n{3,}/g, '\n\n');     // collapse excessive blank lines
+
   const found = {};
 
-  // ── Price ──
-  const priceMatch = t.match(/(?:list(?:ing)?\s*price|asking\s*price|price)[:\s]*\$?([\d,]+(?:\.\d{2})?)/i)
-    || t.match(/\$\s*([\d,]{5,})/);
-  if (priceMatch) found.price = '$' + priceMatch[1].replace(/,/g, '').replace(/(\d)(?=(\d{3})+$)/g, '$1,');
+  // ── Helpers ────────────────────────────────────────────────────────────────
+  function fmtPrice(raw) {
+    const n = parseInt(raw.replace(/[,$]/g, ''), 10);
+    return isNaN(n) ? raw : '$' + n.toLocaleString('en-US');
+  }
+  function fmtNum(raw) {
+    const n = parseInt(raw.replace(/,/g, ''), 10);
+    return isNaN(n) ? raw : n.toLocaleString('en-US');
+  }
+  // Match a labeled field: returns trimmed value string or null
+  // Stops at next field label (next line or double-space boundary in value)
+  function field(patterns) {
+    for (const pat of patterns) {
+      const re = new RegExp('(?:^|\\n)\\s*' + pat + '\\s*[:#]+\\s*([^\\n]+)', 'im');
+      const m = t.match(re);
+      if (m) return m[1].trim();
+    }
+    return null;
+  }
 
-  // ── Beds ──
-  const bedMatch = t.match(/(\d+(?:\.\d)?)\s*(?:bed(?:room)?s?|br|bd)/i)
-    || t.match(/bed(?:room)?s?[:\s]+(\d+)/i);
-  if (bedMatch) found.bedrooms = bedMatch[1];
+  // ── Price ──────────────────────────────────────────────────────────────────
+  const priceRaw = field(['list(?:ing)?\\s*price', 'asking\\s*price', 'sold\\s*price']);
+  if (priceRaw) {
+    // Strip trailing non-price junk (e.g. "  County" after value)
+    const priceNum = priceRaw.match(/\$?([\d,]+(?:\.\d{2})?)/);
+    if (priceNum) found.price = fmtPrice(priceNum[1]);
+  } else {
+    const m = t.match(/\$\s*([\d,]{5,})/);
+    if (m) found.price = fmtPrice(m[1]);
+  }
 
-  // ── Baths ──
-  const bathMatch = t.match(/(\d+(?:\.\d)?)\s*(?:bath(?:room)?s?|ba)\b/i)
-    || t.match(/bath(?:room)?s?[:\s]+(\d+(?:\.\d)?)/i);
-  if (bathMatch) found.bathrooms = bathMatch[1];
+  // ── Bedrooms ───────────────────────────────────────────────────────────────
+  // FlexMLS uses "# Bedrooms:   2" — standard uses "Bedrooms: 3" or "Beds: 3"
+  const bedRaw = field(['#\\s*bed(?:room)?s?', 'bed(?:room)?s?', 'br', 'bd']);
+  if (bedRaw) {
+    const m = bedRaw.match(/^(\d+)/);
+    if (m) found.bedrooms = m[1];
+  } else {
+    const m = t.match(/\b(\d+)\s*bed(?:room)?s?\b/i);
+    if (m) found.bedrooms = m[1];
+  }
 
-  // ── Sqft ──
-  const sqftMatch = t.match(/(\d[\d,]+)\s*(?:sq\.?\s*ft|square\s*feet?|sqft)/i)
-    || t.match(/(?:sq\.?\s*ft|square\s*feet?|sqft)[:\s]+([\d,]+)/i);
-  if (sqftMatch) found.sqft = sqftMatch[1].replace(/,/g,'').replace(/(\d)(?=(\d{3})+$)/g,'$1,');
+  // ── Bathrooms ──────────────────────────────────────────────────────────────
+  // FlexMLS uses "# Bathrooms:   2" — also handle "Baths Full / Half" split
+  const bathFullField = field(['#\\s*bath(?:room)?s?', 'baths?\\s*full', 'bath(?:room)?s?', 'baths?']);
+  const bathHalfField = field(['baths?\\s*(?:half|partial|1\\/2)', 'half\\s*baths?']);
+  if (bathFullField) {
+    const full = parseInt(bathFullField.match(/^(\d+)/)?.[1] || '0', 10);
+    const half = bathHalfField ? parseInt(bathHalfField.match(/^(\d+)/)?.[1] || '0', 10) : 0;
+    if (!isNaN(full) && full > 0) {
+      found.bathrooms = half > 0 ? `${full}.5` : `${full}`;
+    }
+  } else {
+    const m = t.match(/\b(\d+(?:\.\d)?)\s*ba(?:th(?:room)?s?)?\b/i);
+    if (m) found.bathrooms = m[1];
+  }
 
-  // ── Address ──
-  const addrMatch = t.match(/(?:address|property\s*address|location)[:\s]+([^\n,]+)/i)
-    || t.match(/(\d{2,5}\s+[A-Za-z0-9 ]+(?:St|Ave|Blvd|Dr|Rd|Ln|Ct|Way|Pl|Circle|Trail|Trl|Loop|Hwy)[^,\n]*)/i);
-  if (addrMatch) found.address = addrMatch[1].trim();
+  // ── Square Footage ─────────────────────────────────────────────────────────
+  // FlexMLS: "Approx SqFt:   1,178 / County" — strip trailing " / County" etc.
+  const sqftRaw = field(['approx\.?\\s*sq\.?\\s*ft', 'sq\.?\\s*ft\.?(?:\\s*(?:heated|living|total))?', 'sqft', 'square\\s*feet?']);
+  if (sqftRaw) {
+    const m = sqftRaw.match(/^([\d,]+)/);
+    if (m) found.sqft = fmtNum(m[1]);
+  } else {
+    const m = t.match(/\b([\d,]{4,})\s*(?:sq\.?\s*ft\.?|sqft|square\s*feet?)\b/i);
+    if (m) found.sqft = fmtNum(m[1]);
+  }
 
-  // ── City/State/ZIP ──
-  const cityMatch = t.match(/(?:city|location)[:\s]+([A-Za-z\s]+,\s*[A-Z]{2}\s*\d{5})/i)
-    || t.match(/([A-Za-z\s]+,\s*[A-Z]{2}\s+\d{5})/);
-  if (cityMatch) found.city = cityMatch[1].trim();
+  // ── Address ────────────────────────────────────────────────────────────────
+  // FlexMLS: "Address:   9123 W Arden LN, Bellemont, AZ 86015"
+  // Extract just the street part (before the first comma = city separator)
+  const addrRaw = field(['address', 'property\\s*address', 'street\\s*address']);
+  if (addrRaw) {
+    // "9123 W Arden LN, Bellemont, AZ 86015" → street = "9123 W Arden LN"
+    // city = "Bellemont, AZ 86015"
+    const commaIdx = addrRaw.indexOf(',');
+    if (commaIdx > 0) {
+      found.address = addrRaw.substring(0, commaIdx).trim();
+      // Also extract city from the remainder if not already found
+      const cityPart = addrRaw.substring(commaIdx + 1).trim();
+      // cityPart looks like "Bellemont, AZ 86015" or "Bellemont AZ 86015"
+      const cityM = cityPart.match(/^([A-Za-z][A-Za-z ]+?)[,\s]+([A-Z]{2})\s+(\d{5})/);
+      if (cityM) found._cityFromAddr = `${cityM[1].trim()}, ${cityM[2]} ${cityM[3]}`;
+    } else {
+      found.address = addrRaw.trim();
+    }
+  } else {
+    const m = t.match(/(?:^|\b)(\d{2,5}\s+(?:[NSEW]\s+)?[A-Za-z][A-Za-z0-9 .#]{3,}(?:Street|Avenue|Boulevard|Drive|Road|Lane|Court|Way|Place|Circle|Trail|Loop|Highway|Parkway|St|Ave|Blvd|Dr|Rd|Ln|Ct|Pl|Cir|Trl|Hwy|Pkwy)\b[^,\n]{0,25})/i);
+    if (m) found.address = m[1].trim();
+  }
 
-  // ── Description / Remarks ──
-  const descMatch = t.match(/(?:remarks?|description|public\s*remarks?|agent\s*remarks?)[:\s]+([^\n]{30,})/i);
-  if (descMatch) found.description = descMatch[1].trim().replace(/\s+/g, ' ');
+  // ── City / State / ZIP ─────────────────────────────────────────────────────
+  // Use city parsed inline from Address field if available
+  if (found._cityFromAddr) {
+    found.city = found._cityFromAddr;
+    delete found._cityFromAddr;
+  } else {
+    const cityLabelMatch = t.match(/(?:^|\n)\s*(?:city[\s/]*state[\s/]*zip(?:code)?|city\s*[,/]\s*state|city)\s*[:#\t ]+([^\n]+)/im);
+    if (cityLabelMatch) {
+      let raw = cityLabelMatch[1].trim();
+      // Already fully inline: "Flagstaff, AZ 86001" or "Flagstaff AZ 86001"
+      const inlineFull = raw.match(/^([A-Za-z][A-Za-z ]+?)[,\s]+([A-Z]{2})\s+(\d{5})/);
+      if (inlineFull) {
+        raw = `${inlineFull[1].trim()}, ${inlineFull[2]} ${inlineFull[3]}`;
+      } else {
+        // After normalization, State and Zip may be on separate lines: look ahead
+        const stateM = t.match(/(?:^|\n)\s*State\s*[:#]+\s*([A-Z]{2})/im);
+        const zipM   = t.match(/(?:^|\n)\s*Zip(?:\s*Code)?\s*[:#]+\s*(\d{5})/im);
+        if (stateM && zipM) {
+          raw = `${raw}, ${stateM[1]} ${zipM[1]}`;
+        }
+      }
+      found.city = raw;
+    } else {
+      const m = t.match(/\b([A-Za-z][A-Za-z ]{2,}(?:,\s*|\s+)[A-Z]{2}\s+\d{5})\b/);
+      if (m) found.city = m[1].trim();
+    }
+  }
 
-  // ── Agent Name ──
-  const agentMatch = t.match(/(?:listing\s*agent|agent\s*name|presented\s*by|listed\s*by)[:\s]+([A-Za-z\s,.]+)/i);
-  if (agentMatch) found.agent_name = agentMatch[1].trim().replace(/,$/, '');
+  // ── Description / Remarks ──────────────────────────────────────────────────
+  const descRaw = field(['public\\s*remarks?', 'agent\\s*remarks?', 'remarks?', 'description']);
+  if (descRaw) found.description = descRaw.replace(/\s+/g, ' ').trim();
 
-  // ── Agent Phone ──
-  const phoneMatch = t.match(/(?:agent\s*phone|phone|cell|mobile|contact)[:\s]+([\d\s\-\(\)\.+]{10,})/i)
-    || t.match(/(\(?\d{3}\)?[\s\-\.]?\d{3}[\s\-\.]\d{4})/);
-  if (phoneMatch) found.agent_phone = phoneMatch[1].trim().replace(/\s+/g,' ');
+  // ── Agent Name ─────────────────────────────────────────────────────────────
+  // FlexMLS: "Presented By :  Austin J Prettyman  RE/MAX Fine Properties..."
+  // Standard: "Listing Agent: Jane Smith"
+  const agentPresentedMatch = t.match(/(?:^|\n)\s*Presented\s*By\s*:?\s*([A-Za-z][A-Za-z .,''-]+?)(?=\n|$)/im);
+  const agentLabelRaw = field(['listing\\s*agent', 'agent\\s*name', 'listed\\s*by', 'co[\\s-]?list(?:ing)?\\s*agent']);
+  if (agentPresentedMatch) {
+    found.agent_name = agentPresentedMatch[1].trim().replace(/[,\s]+$/, '');
+  } else if (agentLabelRaw) {
+    // Stop before next inline label (double-space + word + colon)
+    const stopIdx = agentLabelRaw.search(/\s{2,}[A-Za-z]+\s*:/);
+    found.agent_name = (stopIdx > 0 ? agentLabelRaw.substring(0, stopIdx) : agentLabelRaw).trim().replace(/[,\s]+$/, '');
+  }
 
-  // ── Agent Email ──
-  const emailMatch = t.match(/[\w.\-]+@[\w.\-]+\.[a-z]{2,}/i);
-  if (emailMatch) found.agent_email = emailMatch[0];
+  // ── Agent Phone ────────────────────────────────────────────────────────────
+  const phoneLabelRaw = field(['agent\\s*phone', 'listing\\s*agent\\s*phone', 'cell(?:ular)?', 'mobile', 'office\\s*phone', 'phone', 'contact(?:\\s*#)?']);
+  if (phoneLabelRaw) {
+    const m = phoneLabelRaw.match(/[\d()+.\s-]{7,}/);
+    if (m) found.agent_phone = m[0].trim().replace(/\s+/g, ' ');
+  } else {
+    // Scan for bare phone number anywhere in text
+    const m = t.match(/\(?\d{3}\)?[\s.\-]\d{3}[\s.\-]\d{4}/);
+    if (m) found.agent_phone = m[0].trim();
+  }
 
-  // ── Brokerage ──
-  const brokerMatch = t.match(/(?:brokerage|broker|office|firm)[:\s]+([^\n]+)/i);
-  if (brokerMatch) found.agent_brokerage = brokerMatch[1].trim();
+  // ── Agent Email ────────────────────────────────────────────────────────────
+  const emailM = t.match(/[\w.+\-]+@[\w.\-]+\.[a-z]{2,}/i);
+  if (emailM) found.agent_email = emailM[0];
 
-  // ── Open House Date ──
-  const ohDateMatch = t.match(/(?:open\s*house)[:\s]+([^\n,]+)/i);
-  if (ohDateMatch) found.open_house_date = ohDateMatch[1].trim();
+  // ── Brokerage ──────────────────────────────────────────────────────────────
+  // FlexMLS: "Listing Office:   RE/MAX Fine Properties"
+  // Also line after "Presented By: Agent Name" is often brokerage
+  const brokerRaw = field(['listing\\s*(?:broker(?:age)?|office|firm)', 'brokerage', 'broker(?!age)', 'company', 'office']);
+  if (brokerRaw) {
+    found.agent_brokerage = brokerRaw.trim();
+  } else if (agentPresentedMatch) {
+    // In FlexMLS PDFs, the line right after the agent name is the brokerage
+    const afterAgent = t.substring(t.indexOf(agentPresentedMatch[0]) + agentPresentedMatch[0].length);
+    const nextLine = afterAgent.match(/^\s*([^\n]+)/);
+    if (nextLine && nextLine[1].trim() && !nextLine[1].match(/\d{5}|@|\d{3}[.\-]\d{3}/)) {
+      found.agent_brokerage = nextLine[1].trim();
+    }
+  }
 
-  // ── Open House Time ──
-  const ohTimeMatch = t.match(/(\d{1,2}(?::\d{2})?\s*(?:AM|PM)\s*[–\-to]+\s*\d{1,2}(?::\d{2})?\s*(?:AM|PM))/i);
-  if (ohTimeMatch) found.open_house_time = ohTimeMatch[1].trim();
+  // ── Open House Date ────────────────────────────────────────────────────────
+  const ohDateLabelRaw = field(['open\\s*house\\s*date']);
+  const ohDateCombinedRaw = field(['open\\s*house']);
+  if (ohDateLabelRaw) {
+    let d = ohDateLabelRaw.replace(/\s*\d{1,2}(?::\d{2})?\s*(?:AM|PM).*/i, '').trim();
+    found.open_house_date = d;
+  } else if (ohDateCombinedRaw) {
+    let d = ohDateCombinedRaw;
+    const timeIdx = d.search(/\d{1,2}(?::\d{2})?\s*(?:AM|PM)/i);
+    if (timeIdx > 0) d = d.substring(0, timeIdx).trim().replace(/[,\s]+$/, '');
+    found.open_house_date = d;
+  }
+
+  // ── Open House Time ────────────────────────────────────────────────────────
+  const ohTimeLabelRaw = field(['open\\s*house\\s*time']);
+  const ohTimeInlineM = t.match(/\b(\d{1,2}(?::\d{2})?\s*(?:AM|PM)\s*(?:–|—|-|to)\s*\d{1,2}(?::\d{2})?\s*(?:AM|PM))\b/i);
+  if (ohTimeLabelRaw) found.open_house_time = ohTimeLabelRaw.trim();
+  else if (ohTimeInlineM) found.open_house_time = ohTimeInlineM[1].trim();
 
   return found;
 }
 
 // ─── PDF Text Extractor ──────────────────────────────────────────────────────
+// Import worker as a local URL so we never depend on an external CDN version
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+
 async function extractTextFromPdf(file) {
   try {
     const pdfjsLib = await import('pdfjs-dist');
-    pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
+    // Use the locally-bundled worker — avoids cdnjs version mismatch 404s
+    pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
     const arrayBuffer = await file.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
     let fullText = '';
     for (let i = 1; i <= Math.min(pdf.numPages, 5); i++) {
       const page = await pdf.getPage(i);
       const content = await page.getTextContent();
-      fullText += content.items.map(item => item.str).join(' ') + '\n';
+      // Use double-space as separator so parseMlsText normalization fires correctly
+      // (FlexMLS PDFs are all on one line; 2+ spaces → newlines in the parser)
+      fullText += content.items.map(item => item.str).join('  ') + '\n';
     }
     return fullText;
   } catch (err) {
