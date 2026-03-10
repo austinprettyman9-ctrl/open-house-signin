@@ -17,11 +17,11 @@ import {
 } from 'lucide-react';
 
 // ─── EmailJS Config ──────────────────────────────────────────────────────────
-const EMAILJS_SERVICE_ID       = 'YOUR_SERVICE_ID';
-const EMAILJS_AGENT_TEMPLATE   = 'YOUR_AGENT_TEMPLATE_ID';
-const EMAILJS_VISITOR_TEMPLATE = 'YOUR_VISITOR_TEMPLATE_ID';
-const EMAILJS_PUBLIC_KEY       = 'YOUR_PUBLIC_KEY';
-const EMAILJS_ENABLED          = false;
+const EMAILJS_SERVICE_ID       = 'service_t2c7gf4';
+const EMAILJS_AGENT_TEMPLATE   = 'template_15grhmx';
+const EMAILJS_VISITOR_TEMPLATE = 'template_psedv49';
+const EMAILJS_PUBLIC_KEY       = '96jrWedilcz0BqW1q';
+const EMAILJS_ENABLED          = true;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function getListingId() {
