@@ -1486,6 +1486,229 @@ function AgentPhotoUploader({ value, onChange, brandColor }) {
   );
 }
 
+// ─── iOS-style Wheel Picker ───────────────────────────────────────────────────
+const ITEM_H = 44; // px per item row
+
+function WheelColumn({ items, selectedIndex, onChange }) {
+  const listRef   = useRef(null);
+  const isDragging = useRef(false);
+  const startY    = useRef(0);
+  const startIdx  = useRef(0);
+  const animRef   = useRef(null);
+
+  // Scroll to selected index on mount / when selectedIndex changes externally
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    el.scrollTop = selectedIndex * ITEM_H;
+  }, [selectedIndex]);
+
+  function clamp(v) { return Math.max(0, Math.min(items.length - 1, v)); }
+
+  function snapToNearest(el) {
+    const raw  = el.scrollTop / ITEM_H;
+    const idx  = clamp(Math.round(raw));
+    el.scrollTop = idx * ITEM_H;
+    onChange(idx);
+  }
+
+  function onScroll(e) {
+    clearTimeout(animRef.current);
+    animRef.current = setTimeout(() => snapToNearest(e.target), 120);
+  }
+
+  // Touch
+  function onTouchStart(e) {
+    startY.current   = e.touches[0].clientY;
+    startIdx.current = clamp(Math.round(listRef.current.scrollTop / ITEM_H));
+    isDragging.current = true;
+  }
+  function onTouchMove(e) {
+    if (!isDragging.current) return;
+    const delta = startY.current - e.touches[0].clientY;
+    listRef.current.scrollTop = startIdx.current * ITEM_H + delta;
+  }
+  function onTouchEnd() {
+    isDragging.current = false;
+    snapToNearest(listRef.current);
+  }
+
+  // Mouse (desktop)
+  function onMouseDown(e) {
+    startY.current   = e.clientY;
+    startIdx.current = clamp(Math.round(listRef.current.scrollTop / ITEM_H));
+    isDragging.current = true;
+    e.preventDefault();
+  }
+  function onMouseMove(e) {
+    if (!isDragging.current) return;
+    const delta = startY.current - e.clientY;
+    listRef.current.scrollTop = startIdx.current * ITEM_H + delta;
+  }
+  function onMouseUp() { if (isDragging.current) { isDragging.current = false; snapToNearest(listRef.current); } }
+
+  return (
+    <div className="wc-col"
+      onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp}>
+      {/* top/bottom padding ghost rows */}
+      <div
+        ref={listRef}
+        className="wc-list"
+        onScroll={onScroll}
+        onTouchStart={onTouchStart}
+        onTouchMove={onTouchMove}
+        onTouchEnd={onTouchEnd}
+        onMouseDown={onMouseDown}
+      >
+        <div style={{ height: ITEM_H * 2 }} aria-hidden/>
+        {items.map((item, i) => (
+          <div
+            key={i}
+            className={`wc-item${i === selectedIndex ? ' wc-item--sel' : ''}`}
+            onClick={() => { listRef.current.scrollTop = i * ITEM_H; onChange(i); }}
+          >{item}</div>
+        ))}
+        <div style={{ height: ITEM_H * 2 }} aria-hidden/>
+      </div>
+      {/* selection highlight bar */}
+      <div className="wc-highlight" aria-hidden/>
+      {/* fade masks */}
+      <div className="wc-fade wc-fade--top"    aria-hidden/>
+      <div className="wc-fade wc-fade--bottom" aria-hidden/>
+    </div>
+  );
+}
+
+// ── Date Wheel Picker ────────────────────────────────────────────────────────
+const DAYS_OF_WEEK = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+const MONTHS       = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function ordinal(n) {
+  const s = ['th','st','nd','rd'], v = n % 100;
+  return n + (s[(v-20)%10] || s[v] || s[0]);
+}
+function buildDayItems() { return Array.from({length:31}, (_,i) => ordinal(i+1)); }
+
+// Parse "Saturday, Jan 25th" → { dayIdx, monthIdx, dayOfMonth }
+function parseDateStr(str) {
+  const parts = (str || '').split(/,\s*/);
+  let dayIdx = 0, monthIdx = 0, dom = 1;
+  if (parts[0]) {
+    const d = DAYS_OF_WEEK.findIndex(d => d.toLowerCase() === parts[0].toLowerCase());
+    if (d !== -1) dayIdx = d;
+  }
+  if (parts[1]) {
+    const mParts = parts[1].trim().split(/\s+/);
+    const m = MONTHS.findIndex(m => m.toLowerCase() === (mParts[0]||'').toLowerCase());
+    if (m !== -1) monthIdx = m;
+    const dayNum = parseInt(mParts[1]);
+    if (!isNaN(dayNum)) dom = Math.max(1, Math.min(31, dayNum));
+  }
+  return { dayIdx, monthIdx, dom };
+}
+function formatDateStr(dayIdx, monthIdx, dom) {
+  return `${DAYS_OF_WEEK[dayIdx]}, ${MONTHS[monthIdx]} ${ordinal(dom)}`;
+}
+
+function DateWheelPicker({ value, onChange }) {
+  const parsed = parseDateStr(value);
+  const [dayIdx,   setDayIdx]   = useState(parsed.dayIdx);
+  const [monthIdx, setMonthIdx] = useState(parsed.monthIdx);
+  const [dom,      setDom]      = useState(parsed.dom - 1); // 0-based index
+
+  function emit(d, m, dy) {
+    onChange(formatDateStr(d, m, dy + 1));
+  }
+
+  return (
+    <div className="wc-picker">
+      <WheelColumn items={DAYS_OF_WEEK} selectedIndex={dayIdx}
+        onChange={i => { setDayIdx(i); emit(i, monthIdx, dom); }}/>
+      <WheelColumn items={MONTHS} selectedIndex={monthIdx}
+        onChange={i => { setMonthIdx(i); emit(dayIdx, i, dom); }}/>
+      <WheelColumn items={buildDayItems()} selectedIndex={dom}
+        onChange={i => { setDom(i); emit(dayIdx, monthIdx, i); }}/>
+    </div>
+  );
+}
+
+// ── Time Range Wheel Picker ──────────────────────────────────────────────────
+const HOURS   = Array.from({length:12}, (_,i) => String(i+1));   // 1-12
+const MINUTES = Array.from({length:12}, (_,i) => String(i*5).padStart(2,'0')); // 00,05,…55
+const MERIDS   = ['AM','PM'];
+
+// Parse "1:00 PM – 4:00 PM" → { sH, sM, sAP, eH, eM, eAP }
+function parseTimeStr(str) {
+  const def = { sH:0, sM:0, sAP:1, eH:2, eM:0, eAP:1 };
+  if (!str) return def;
+  const m = str.match(/(\d{1,2}):?(\d{2})?\s*(AM|PM)\s*(?:–|—|-|to)\s*(\d{1,2}):?(\d{2})?\s*(AM|PM)/i);
+  if (!m) return def;
+  function hIdx(h) { const n = parseInt(h); return Math.max(0, (n === 12 ? 0 : n) - 1); }
+  function mIdx(mm) { if (!mm) return 0; const n = parseInt(mm); return Math.max(0, MINUTES.findIndex(x => parseInt(x) >= n)); }
+  function apIdx(ap) { return ap.toUpperCase() === 'PM' ? 1 : 0; }
+  return {
+    sH: hIdx(m[1]), sM: mIdx(m[2]), sAP: apIdx(m[3]),
+    eH: hIdx(m[4]), eM: mIdx(m[5]), eAP: apIdx(m[6]),
+  };
+}
+function formatTimeStr(sH, sM, sAP, eH, eM, eAP) {
+  const sh = HOURS[sH], sm = MINUTES[sM], sa = MERIDS[sAP];
+  const eh = HOURS[eH], em = MINUTES[eM], ea = MERIDS[eAP];
+  return `${sh}:${sm} ${sa} – ${eh}:${em} ${ea}`;
+}
+
+function TimeRangeWheelPicker({ value, onChange }) {
+  const parsed = parseTimeStr(value);
+  const [sH,  setSH]  = useState(parsed.sH);
+  const [sM,  setSM]  = useState(parsed.sM);
+  const [sAP, setSAP] = useState(parsed.sAP);
+  const [eH,  setEH]  = useState(parsed.eH);
+  const [eM,  setEM]  = useState(parsed.eM);
+  const [eAP, setEAP] = useState(parsed.eAP);
+
+  function emit(sh, sm, sap, eh, em, eap) {
+    onChange(formatTimeStr(sh, sm, sap, eh, em, eap));
+  }
+
+  return (
+    <div className="wc-time-wrap">
+      <div className="wc-time-label">Start</div>
+      <div className="wc-picker wc-picker--time">
+        <WheelColumn items={HOURS}  selectedIndex={sH}  onChange={i=>{setSH(i);  emit(i,sM,sAP,eH,eM,eAP);}}/>
+        <div className="wc-sep">:</div>
+        <WheelColumn items={MINUTES} selectedIndex={sM} onChange={i=>{setSM(i);  emit(sH,i,sAP,eH,eM,eAP);}}/>
+        <WheelColumn items={MERIDS} selectedIndex={sAP} onChange={i=>{setSAP(i); emit(sH,sM,i,eH,eM,eAP);}}/>
+      </div>
+      <div className="wc-time-dash">–</div>
+      <div className="wc-time-label">End</div>
+      <div className="wc-picker wc-picker--time">
+        <WheelColumn items={HOURS}  selectedIndex={eH}  onChange={i=>{setEH(i);  emit(sH,sM,sAP,i,eM,eAP);}}/>
+        <div className="wc-sep">:</div>
+        <WheelColumn items={MINUTES} selectedIndex={eM} onChange={i=>{setEM(i);  emit(sH,sM,sAP,eH,i,eAP);}}/>
+        <WheelColumn items={MERIDS} selectedIndex={eAP} onChange={i=>{setEAP(i); emit(sH,sM,sAP,eH,eM,i);}}/>
+      </div>
+    </div>
+  );
+}
+
+// ── Wheel Picker Field (trigger button + inline expanded picker) ──────────────
+function WheelPickerField({ label, displayValue, children }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="field-group">
+      <label>{label}</label>
+      <button type="button" className="wp-trigger" onClick={() => setOpen(o => !o)}>
+        <span>{displayValue || <span className="wp-placeholder">Tap to set</span>}</span>
+        <ChevronRight size={15} className={`wp-chevron${open?' wp-chevron--open':''}`}/>
+      </button>
+      {open && (
+        <div className="wp-panel">
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Settings Panel ───────────────────────────────────────────────────────────
 function SettingsPanel({ property, docs, onSave, onBack, dark, setDark }) {
   const [p, setP]             = useState({ ...property });
@@ -1576,8 +1799,12 @@ function SettingsPanel({ property, docs, onSave, onBack, dark, setDark }) {
               <div className="field-group"><label>Bathrooms</label><input value={p.bathrooms} onChange={e=>setP({...p,bathrooms:e.target.value})} placeholder="2"/></div>
               <div className="field-group"><label>Square Footage</label><input value={p.sqft} onChange={e=>setP({...p,sqft:e.target.value})} placeholder="2,100"/></div>
               <div className="field-group full"><label>Description / Remarks</label><textarea rows={3} value={p.description} onChange={e=>setP({...p,description:e.target.value})}/></div>
-              <div className="field-group"><label>Open House Date</label><input value={p.open_house_date} onChange={e=>setP({...p,open_house_date:e.target.value})} placeholder="Saturday, Jan 25th"/></div>
-              <div className="field-group"><label>Open House Time</label><input value={p.open_house_time} onChange={e=>setP({...p,open_house_time:e.target.value})} placeholder="1:00 PM – 4:00 PM"/></div>
+              <WheelPickerField label={<><Calendar size={12}/> Open House Date</>} displayValue={p.open_house_date}>
+                <DateWheelPicker value={p.open_house_date} onChange={v => setP({...p, open_house_date: v})}/>
+              </WheelPickerField>
+              <WheelPickerField label={<><Clock size={12}/> Open House Time</>} displayValue={p.open_house_time}>
+                <TimeRangeWheelPicker value={p.open_house_time} onChange={v => setP({...p, open_house_time: v})}/>
+              </WheelPickerField>
             </div>
           </div>
         )}
