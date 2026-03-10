@@ -719,6 +719,95 @@ function SignInForm({ property, leads, onSubmit, onAdminClick }) {
   );
 }
 
+// ─── Doc Viewer (inline PDF / image with save-to-gallery) ────────────────────
+function DocViewer({ doc, onActivity }) {
+  const [expanded, setExpanded] = useState(false);
+  const label = doc.label || doc.name || 'Document';
+  const isImage = doc.type === 'image';
+  const isPdf   = doc.type === 'pdf' || (!isImage && (doc.data || doc.url));
+  const src     = doc.data || doc.url;
+
+  // Determine if it's an uploaded file (base64) or an external URL
+  const isBase64 = src && src.startsWith('data:');
+
+  // "Save to Photos" — creates a temporary <a download> click
+  async function saveToGallery(e) {
+    e.stopPropagation();
+    if (onActivity) onActivity();
+
+    if (isBase64) {
+      // Direct download from base64
+      const a = document.createElement('a');
+      a.href = src;
+      a.download = doc.name || (isImage ? `${label}.jpg` : `${label}.pdf`);
+      a.click();
+      return;
+    }
+
+    // For external URLs — try fetch then download (may be blocked by CORS)
+    try {
+      const res  = await fetch(src);
+      const blob = await res.blob();
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href     = url;
+      a.download = doc.name || label;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    } catch {
+      // Fallback: just open in new tab
+      window.open(src, '_blank');
+    }
+  }
+
+  function toggle(e) {
+    e.stopPropagation();
+    if (onActivity) onActivity();
+    setExpanded(x => !x);
+  }
+
+  return (
+    <div className={`doc-viewer-card${expanded ? ' doc-viewer-card--open' : ''}`}>
+      {/* Header row — always visible */}
+      <div className="doc-viewer-header" onClick={toggle}>
+        <div className="doc-viewer-icon">
+          {isImage ? <Image size={18}/> : <FileText size={18}/>}
+        </div>
+        <span className="doc-viewer-label">{label}</span>
+        <div className="doc-viewer-actions" onClick={e => e.stopPropagation()}>
+          <button className="doc-save-btn" onClick={saveToGallery} title="Save to device">
+            <Download size={14}/> Save
+          </button>
+          {!isBase64 && src && (
+            <a className="doc-open-btn" href={src} target="_blank" rel="noopener noreferrer"
+               onClick={e => { e.stopPropagation(); if (onActivity) onActivity(); }}>
+              <Link size={14}/> Open
+            </a>
+          )}
+        </div>
+        <ChevronRight size={15} className={`doc-viewer-chevron${expanded ? ' doc-viewer-chevron--open' : ''}`}/>
+      </div>
+
+      {/* Expanded inline preview */}
+      {expanded && src && (
+        <div className="doc-viewer-body">
+          {isImage ? (
+            <img src={src} alt={label} className="doc-viewer-img"
+              onError={e => { e.target.style.display='none'; }}/>
+          ) : (
+            <iframe
+              src={isBase64 ? src : `https://docs.google.com/viewer?url=${encodeURIComponent(src)}&embedded=true`}
+              title={label}
+              className="doc-viewer-iframe"
+              frameBorder="0"
+            />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Thank You / Property Details ─────────────────────────────────────────────
 function ThankYou({ visitor, property, docs, onBack }) {
   const [countdown, setCountdown] = useState(RESET_SECONDS);
@@ -795,16 +884,12 @@ function ThankYou({ visitor, property, docs, onBack }) {
             </div>
           )}
         </div>
-        {docs?.filter(d => d.url).length > 0 && (
+        {docs?.filter(d => d.url || d.data).length > 0 && (
           <div className="docs-section">
-            <h3 className="section-title"><FileText size={16}/> Documents</h3>
-            <div className="docs-list">
-              {docs.filter(d => d.url).map((doc, i) => (
-                <a key={i} href={doc.url} target="_blank" rel="noopener noreferrer" className="doc-link" onClick={handleActivity}>
-                  <FileText size={16}/>
-                  <span>{doc.label || 'Document'}</span>
-                  <Download size={14} className="doc-dl"/>
-                </a>
+            <h3 className="section-title"><FileText size={16}/> Documents &amp; Resources</h3>
+            <div className="docs-viewer-list">
+              {docs.filter(d => d.url || d.data).map((doc, i) => (
+                <DocViewer key={i} doc={doc} onActivity={handleActivity}/>
               ))}
             </div>
           </div>
@@ -1486,6 +1571,96 @@ function AgentPhotoUploader({ value, onChange, brandColor }) {
   );
 }
 
+// ─── Doc Upload Row ───────────────────────────────────────────────────────────
+// Each doc: { label, url, data (base64), type ('pdf'|'image'|'url'), name }
+function DocUploadRow({ doc, onChange, onRemove }) {
+  const fileRef  = useRef(null);
+  const [mode, setMode] = useState(doc.data ? 'file' : 'url');
+  const [loading, setLoading] = useState(false);
+
+  async function handleFile(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    setLoading(true);
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const data = ev.target.result; // data:application/pdf;base64,...
+      const type = file.type.startsWith('image/') ? 'image' : 'pdf';
+      onChange('data',  data);
+      onChange('type',  type);
+      onChange('name',  file.name);
+      if (!doc.label) onChange('label', file.name.replace(/\.[^.]+$/, ''));
+      setLoading(false);
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function clearFile() {
+    onChange('data', '');
+    onChange('type', 'url');
+    onChange('name', '');
+    setMode('url');
+    if (fileRef.current) fileRef.current.value = '';
+  }
+
+  return (
+    <div className="doc-upload-row">
+      {/* Label */}
+      <input
+        className="doc-label-input"
+        placeholder="Label (e.g. MLS Sheet, Floor Plan)"
+        value={doc.label || ''}
+        onChange={e => onChange('label', e.target.value)}
+      />
+
+      {/* Mode toggle */}
+      <div className="doc-mode-tabs">
+        <button type="button"
+          className={`doc-mode-tab${mode === 'file' ? ' active' : ''}`}
+          onClick={() => setMode('file')}>
+          <Upload size={12}/> Upload File
+        </button>
+        <button type="button"
+          className={`doc-mode-tab${mode === 'url' ? ' active' : ''}`}
+          onClick={() => setMode('url')}>
+          <Link size={12}/> URL Link
+        </button>
+      </div>
+
+      {mode === 'file' ? (
+        doc.data ? (
+          <div className="doc-file-preview">
+            {doc.type === 'image'
+              ? <img src={doc.data} alt={doc.name} className="doc-thumb"/>
+              : <div className="doc-pdf-chip"><FileText size={14}/> {doc.name || 'PDF'}</div>
+            }
+            <button type="button" className="btn-outline-sm danger" onClick={clearFile}>
+              <X size={12}/> Remove
+            </button>
+          </div>
+        ) : (
+          <div className="doc-drop-zone" onClick={() => fileRef.current?.click()}>
+            <input ref={fileRef} type="file" accept=".pdf,image/*" style={{display:'none'}} onChange={handleFile}/>
+            {loading
+              ? <><Loader size={16} className="spin"/> Processing…</>
+              : <><Upload size={16}/> Click to upload PDF or image</>
+            }
+          </div>
+        )
+      ) : (
+        <input
+          className="doc-url-input"
+          placeholder="https://drive.google.com/…"
+          value={doc.url || ''}
+          onChange={e => onChange('url', e.target.value)}
+        />
+      )}
+
+      <button className="btn-icon danger" onClick={onRemove}><Trash2 size={15}/></button>
+    </div>
+  );
+}
+
 // ─── iOS-style Wheel Picker ───────────────────────────────────────────────────
 const ITEM_H = 44; // px per item row
 
@@ -1828,15 +2003,16 @@ function SettingsPanel({ property, docs, onSave, onBack, dark, setDark }) {
         {tab === 'docs' && (
           <div className="settings-section">
             <div className="settings-section-header">
-              <p className="settings-hint">Paste direct links to PDFs. Visitors see these after signing in.</p>
+              <div>
+                <p className="settings-hint" style={{marginBottom:2}}>Upload PDFs or images — they display inline after sign-in and visitors can save them to their photo gallery.</p>
+                <p className="settings-hint" style={{fontSize:'0.72rem',color:'var(--slate-xs)'}}>Files are stored locally. Keep PDFs under 2 MB each for best performance.</p>
+              </div>
               <button className="btn-outline-sm" onClick={addDoc}><Plus size={13}/> Add Doc</button>
             </div>
             {d.map((doc, i) => (
-              <div key={i} className="doc-row">
-                <input className="doc-label-input" placeholder="Label (e.g. MLS Sheet)" value={doc.label} onChange={e=>updateDoc(i,'label',e.target.value)}/>
-                <input className="doc-url-input" placeholder="https://drive.google.com/…" value={doc.url} onChange={e=>updateDoc(i,'url',e.target.value)}/>
-                <button className="btn-icon danger" onClick={()=>removeDoc(i)}><Trash2 size={15}/></button>
-              </div>
+              <DocUploadRow key={i} doc={doc}
+                onChange={(field, val) => updateDoc(i, field, val)}
+                onRemove={() => removeDoc(i)}/>
             ))}
           </div>
         )}
