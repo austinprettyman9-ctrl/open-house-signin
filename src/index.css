@@ -485,6 +485,12 @@ textarea { resize: vertical; }
   border-radius: var(--radius-sm); font-size: 0.82rem; color: #92400e; margin-bottom: 18px;
 }
 .info-banner a { text-decoration: underline; }
+.info-banner--error {
+  background: #fef2f2; border-color: #fca5a5; color: #991b1b;
+}
+.info-banner--ok {
+  background: #f0fdf4; border-color: #86efac; color: #166534;
+}
 
 /* Filter tabs */
 .filter-tabs {

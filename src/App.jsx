@@ -445,13 +445,38 @@ export default function App() {
     return () => supabase.removeChannel(channel);
   }, [authenticated, listingId]);
 
+  const [dbError, setDbError] = useState(null);
+
   async function fetchLeads() {
     setLeadsLoading(true);
-    const { data, error } = await supabase
-      .from('leads').select('*')
-      .eq('listing_id', listingId)
-      .order('created_at', { ascending: false });
-    if (!error) setLeads(data || []);
+    setDbError(null);
+    try {
+      const { data, error } = await supabase
+        .from('leads').select('*')
+        .eq('listing_id', listingId)
+        .order('created_at', { ascending: false });
+      if (error) {
+        setDbError(error.message || 'Supabase error');
+        // Fall back to local leads
+        const local = loadLocal(listingId, 'local_leads', []);
+        setLeads(local);
+      } else {
+        setLeads(data || []);
+        // Also merge any local leads that may have been saved while offline
+        const local = loadLocal(listingId, 'local_leads', []);
+        if (local.length > 0) {
+          setLeads(prev => {
+            const emails = new Set(prev.map(l => l.email?.toLowerCase()));
+            const extras = local.filter(l => !emails.has(l.email?.toLowerCase()));
+            return extras.length ? [...prev, ...extras] : prev;
+          });
+        }
+      }
+    } catch (e) {
+      setDbError(e.message);
+      const local = loadLocal(listingId, 'local_leads', []);
+      setLeads(local);
+    }
     setLeadsLoading(false);
   }
 
@@ -512,7 +537,7 @@ export default function App() {
       <ToastContainer toasts={toasts} onDismiss={dismissToast}/>
       {view === 'home'        && <ListingsHome allListings={allListings} onAddListing={addListing} onSelect={() => {}} currentListing={listingId} onViewSignIn={() => setView('signin')}/>}
       {view === 'admin_login' && <AdminLogin password={property.admin_password} onSuccess={() => { setAuthenticated(true); setView('dashboard'); }} onBack={() => setView('signin')}/>}
-      {view === 'dashboard'  && authenticated && <Dashboard property={property} leads={leads} loading={leadsLoading} listingId={listingId} onRefresh={fetchLeads} onSettings={() => setView('settings')} onQR={() => setView('qr')} onAnalytics={() => setView('analytics')} onLogout={logout} dark={dark} setDark={setDark}/>}
+      {view === 'dashboard'  && authenticated && <Dashboard property={property} leads={leads} loading={leadsLoading} dbError={dbError} listingId={listingId} onRefresh={fetchLeads} onSettings={() => setView('settings')} onQR={() => setView('qr')} onAnalytics={() => setView('analytics')} onLogout={logout} dark={dark} setDark={setDark}/>}
       {view === 'settings'   && authenticated && <SettingsPanel property={property} docs={docs} onSave={(p, d) => { setProperty(p); setDocs(d); setView('dashboard'); }} onBack={() => setView('dashboard')} dark={dark} setDark={setDark}/>}
       {view === 'qr'         && authenticated && <QRGenerator listingId={listingId} property={property} onBack={() => setView('dashboard')}/>}
       {view === 'analytics'  && authenticated && <Analytics leads={leads} property={property} onBack={() => setView('dashboard')}/>}
@@ -988,7 +1013,7 @@ function AdminLogin({ password: correctPassword, onSuccess, onBack }) {
 }
 
 // ─── Admin Dashboard ──────────────────────────────────────────────────────────
-function Dashboard({ property, leads, loading, listingId, onRefresh, onSettings, onQR, onAnalytics, onLogout, dark, setDark }) {
+function Dashboard({ property, leads, loading, dbError, listingId, onRefresh, onSettings, onQR, onAnalytics, onLogout, dark, setDark }) {
   const [selectedLead, setSelectedLead] = useState(null);
   const [filter, setFilter] = useState('all');
 
@@ -1068,6 +1093,18 @@ function Dashboard({ property, leads, loading, listingId, onRefresh, onSettings,
             <div><p className="stat-num">{leads.filter(l => l.first_time_buyer).length}</p><p className="stat-label">First-Time Buyers</p></div>
           </div>
         </div>
+        {dbError && (
+          <div className="info-banner info-banner--error">
+            <AlertCircle size={15}/>
+            <span><strong>Database error:</strong> {dbError} — leads shown are from local storage only. Go to <a href="https://supabase.com" target="_blank" rel="noreferrer">supabase.com</a> and make sure your project is active and the leads table exists.</span>
+          </div>
+        )}
+        {!dbError && leads.length === 0 && !loading && (
+          <div className="info-banner info-banner--ok">
+            <CheckCircle size={15}/>
+            <span>Database connected ✓ — No sign-ins yet for this listing.</span>
+          </div>
+        )}
         {!EMAILJS_ENABLED && (
           <div className="info-banner">
             <AlertCircle size={15}/>
@@ -1959,7 +1996,7 @@ function SettingsPanel({ property, docs, onSave, onBack, dark, setDark }) {
   function removeDoc(i){ setD(d.filter((_,idx) => idx !== i)); }
 
   function handleSave() {
-    onSave(p, d.filter(doc => doc.label || doc.url));
+    onSave(p, d.filter(doc => doc.label || doc.url || doc.data));
     setSaved(true); setTimeout(() => setSaved(false), 1500);
   }
 
