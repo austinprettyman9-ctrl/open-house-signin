@@ -1665,67 +1665,94 @@ function DocUploadRow({ doc, onChange, onRemove }) {
 const ITEM_H = 44; // px per item row
 
 function WheelColumn({ items, selectedIndex, onChange }) {
-  const listRef   = useRef(null);
+  const listRef    = useRef(null);
   const isDragging = useRef(false);
-  const startY    = useRef(0);
-  const startIdx  = useRef(0);
-  const animRef   = useRef(null);
+  const startY     = useRef(0);
+  const startScrollTop = useRef(0);
+  const animRef    = useRef(null);
+  const lastCommitted = useRef(selectedIndex);
 
-  // Scroll to selected index on mount / when selectedIndex changes externally
+  function clamp(v) { return Math.max(0, Math.min(items.length - 1, v)); }
+
+  // Convert scrollTop → nearest item index (padding already handled by CSS)
+  function scrollToIdx(st) { return clamp(Math.round(st / ITEM_H)); }
+
+  // Snap scroll position to nearest item and fire onChange if changed
+  function snapToNearest(el) {
+    clearTimeout(animRef.current);
+    const idx = scrollToIdx(el.scrollTop);
+    // Smooth-snap to exact position
+    el.scrollTo({ top: idx * ITEM_H, behavior: 'smooth' });
+    if (idx !== lastCommitted.current) {
+      lastCommitted.current = idx;
+      onChange(idx);
+    }
+  }
+
+  // Initialise scroll position (no smooth — instant on mount)
   useEffect(() => {
     const el = listRef.current;
     if (!el) return;
     el.scrollTop = selectedIndex * ITEM_H;
+    lastCommitted.current = selectedIndex;
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // If parent changes selectedIndex externally, jump to it
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    if (selectedIndex === lastCommitted.current) return;
+    el.scrollTo({ top: selectedIndex * ITEM_H, behavior: 'smooth' });
+    lastCommitted.current = selectedIndex;
   }, [selectedIndex]);
 
-  function clamp(v) { return Math.max(0, Math.min(items.length - 1, v)); }
-
-  function snapToNearest(el) {
-    const raw  = el.scrollTop / ITEM_H;
-    const idx  = clamp(Math.round(raw));
-    el.scrollTop = idx * ITEM_H;
-    onChange(idx);
-  }
-
+  // Native scroll (mouse wheel / trackpad / momentum)
   function onScroll(e) {
     clearTimeout(animRef.current);
-    animRef.current = setTimeout(() => snapToNearest(e.target), 120);
+    animRef.current = setTimeout(() => snapToNearest(e.target), 150);
   }
 
-  // Touch
+  // ── Touch drag ──────────────────────────────────────────────────────────────
   function onTouchStart(e) {
-    startY.current   = e.touches[0].clientY;
-    startIdx.current = clamp(Math.round(listRef.current.scrollTop / ITEM_H));
-    isDragging.current = true;
+    startY.current         = e.touches[0].clientY;
+    startScrollTop.current = listRef.current.scrollTop;
+    isDragging.current     = true;
+    clearTimeout(animRef.current);
   }
   function onTouchMove(e) {
     if (!isDragging.current) return;
+    e.preventDefault(); // stop page scroll while dragging wheel
     const delta = startY.current - e.touches[0].clientY;
-    listRef.current.scrollTop = startIdx.current * ITEM_H + delta;
+    listRef.current.scrollTop = startScrollTop.current + delta;
   }
   function onTouchEnd() {
+    if (!isDragging.current) return;
     isDragging.current = false;
     snapToNearest(listRef.current);
   }
 
-  // Mouse (desktop)
+  // ── Mouse drag (desktop) ────────────────────────────────────────────────────
   function onMouseDown(e) {
-    startY.current   = e.clientY;
-    startIdx.current = clamp(Math.round(listRef.current.scrollTop / ITEM_H));
-    isDragging.current = true;
+    startY.current         = e.clientY;
+    startScrollTop.current = listRef.current.scrollTop;
+    isDragging.current     = true;
+    clearTimeout(animRef.current);
     e.preventDefault();
   }
   function onMouseMove(e) {
     if (!isDragging.current) return;
     const delta = startY.current - e.clientY;
-    listRef.current.scrollTop = startIdx.current * ITEM_H + delta;
+    listRef.current.scrollTop = startScrollTop.current + delta;
   }
-  function onMouseUp() { if (isDragging.current) { isDragging.current = false; snapToNearest(listRef.current); } }
+  function onMouseUp() {
+    if (!isDragging.current) return;
+    isDragging.current = false;
+    snapToNearest(listRef.current);
+  }
 
   return (
     <div className="wc-col"
       onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp}>
-      {/* top/bottom padding ghost rows */}
       <div
         ref={listRef}
         className="wc-list"
@@ -1735,15 +1762,17 @@ function WheelColumn({ items, selectedIndex, onChange }) {
         onTouchEnd={onTouchEnd}
         onMouseDown={onMouseDown}
       >
-        <div style={{ height: ITEM_H * 2 }} aria-hidden/>
         {items.map((item, i) => (
           <div
             key={i}
             className={`wc-item${i === selectedIndex ? ' wc-item--sel' : ''}`}
-            onClick={() => { listRef.current.scrollTop = i * ITEM_H; onChange(i); }}
+            onClick={() => {
+              listRef.current.scrollTo({ top: i * ITEM_H, behavior: 'smooth' });
+              lastCommitted.current = i;
+              onChange(i);
+            }}
           >{item}</div>
         ))}
-        <div style={{ height: ITEM_H * 2 }} aria-hidden/>
       </div>
       {/* selection highlight bar */}
       <div className="wc-highlight" aria-hidden/>

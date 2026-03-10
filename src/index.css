@@ -1231,10 +1231,15 @@ textarea { resize: vertical; }
 .wc-list {
   height: 100%;
   overflow-y: scroll;
-  scroll-snap-type: y mandatory;
+  /* No scroll-snap — JS handles snapping so both ends work equally */
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
   user-select: none;
+  touch-action: none;          /* let JS own all touch drag */
+  /* Padding lets first & last items scroll to centre */
+  padding-top:    88px;        /* 2 × ITEM_H */
+  padding-bottom: 88px;
+  box-sizing: content-box;     /* padding doesn't shrink scroll height */
 }
 .wc-list::-webkit-scrollbar { display: none; }
 
@@ -1244,9 +1249,10 @@ textarea { resize: vertical; }
   display: flex; align-items: center; justify-content: center;
   font-size: 1rem; font-weight: 500;
   color: var(--slate-lt);
-  scroll-snap-align: start;
+  /* no scroll-snap-align — JS snaps */
   transition: color .12s, font-size .12s, font-weight .12s;
   cursor: pointer;
+  flex-shrink: 0;
 }
 .wc-item--sel {
   color: var(--slate);
