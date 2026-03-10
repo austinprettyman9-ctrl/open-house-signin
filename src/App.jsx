@@ -456,13 +456,14 @@ export default function App() {
         .eq('listing_id', listingId)
         .order('created_at', { ascending: false });
       if (error) {
-        setDbError(error.message || 'Supabase error');
-        // Fall back to local leads
+        // Only set error if we got zero leads — if realtime already populated
+        // leads, a read error is non-critical
+        setDbError(error.message || 'Supabase read error');
         const local = loadLocal(listingId, 'local_leads', []);
-        setLeads(local);
+        if (local.length > 0) setLeads(local);
       } else {
         setLeads(data || []);
-        // Also merge any local leads that may have been saved while offline
+        // Merge any local leads saved while offline
         const local = loadLocal(listingId, 'local_leads', []);
         if (local.length > 0) {
           setLeads(prev => {
@@ -475,7 +476,7 @@ export default function App() {
     } catch (e) {
       setDbError(e.message);
       const local = loadLocal(listingId, 'local_leads', []);
-      setLeads(local);
+      if (local.length > 0) setLeads(local);
     }
     setLeadsLoading(false);
   }
@@ -1093,10 +1094,19 @@ function Dashboard({ property, leads, loading, dbError, listingId, onRefresh, on
             <div><p className="stat-num">{leads.filter(l => l.first_time_buyer).length}</p><p className="stat-label">First-Time Buyers</p></div>
           </div>
         </div>
-        {dbError && (
+        {dbError && leads.length === 0 && (
           <div className="info-banner info-banner--error">
             <AlertCircle size={15}/>
-            <span><strong>Database error:</strong> {dbError} — leads shown are from local storage only. Go to <a href="https://supabase.com" target="_blank" rel="noreferrer">supabase.com</a> and make sure your project is active and the leads table exists.</span>
+            <span><strong>Can't load leads from database.</strong> Run this in your <a href="https://supabase.com" target="_blank" rel="noreferrer">Supabase</a> SQL Editor to fix permissions:</span>
+            <code style={{display:'block',marginTop:6,fontSize:'0.75rem',background:'#fee2e2',padding:'6px 10px',borderRadius:6,wordBreak:'break-all'}}>
+              create policy if not exists "anon select" on leads for select to anon using (true);
+            </code>
+          </div>
+        )}
+        {dbError && leads.length > 0 && (
+          <div className="info-banner" style={{background:'#f0fdf4',borderColor:'#86efac',color:'#166534'}}>
+            <CheckCircle size={15}/>
+            <span>Leads are live ✓ — read from realtime/local cache. <em style={{opacity:.7}}>({dbError})</em></span>
           </div>
         )}
         {!dbError && leads.length === 0 && !loading && (
