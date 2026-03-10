@@ -470,11 +470,18 @@ export default function App() {
       saveLocal(listingId, 'local_leads', local);
     }
     if (EMAILJS_ENABLED) {
+      const interestLabels = {
+        ready_to_buy:    '✅ Ready to Buy',
+        very_interested: '🔥 Very Interested',
+        browsing:        '🏘️ Actively Browsing',
+        just_looking:    '👀 Just Looking',
+      };
+      const interestLabel = interestLabels[formData.interest] || formData.interest || 'Not specified';
       emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_AGENT_TEMPLATE, {
         agent_name: property.agent_name, agent_email: property.agent_email,
         visitor_name: formData.name, visitor_email: formData.email,
         visitor_phone: formData.phone || 'Not provided',
-        interest: formData.interest || 'Not specified',
+        interest: interestLabel,
         property: property.address, time: new Date().toLocaleString(),
       }, EMAILJS_PUBLIC_KEY).catch(() => {});
       if (formData.email) {
