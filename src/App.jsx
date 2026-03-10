@@ -12,15 +12,16 @@ import {
   Printer, Trash2, Plus, ArrowLeft, RefreshCw, Star,
   MessageSquare, ChevronLeft, BarChart2, Palette, Lock,
   List, AlertCircle, CheckCircle, Image, Upload, Link,
-  Clipboard, Scan, Sparkles, Loader, Camera
+  Clipboard, Scan, Sparkles, Loader, Camera, Copy, Moon,
+  Sun, UserCircle, Tag, Timer, Bell
 } from 'lucide-react';
 
 // ─── EmailJS Config ──────────────────────────────────────────────────────────
-const EMAILJS_SERVICE_ID     = 'YOUR_SERVICE_ID';
-const EMAILJS_AGENT_TEMPLATE = 'YOUR_AGENT_TEMPLATE_ID';
+const EMAILJS_SERVICE_ID       = 'YOUR_SERVICE_ID';
+const EMAILJS_AGENT_TEMPLATE   = 'YOUR_AGENT_TEMPLATE_ID';
 const EMAILJS_VISITOR_TEMPLATE = 'YOUR_VISITOR_TEMPLATE_ID';
-const EMAILJS_PUBLIC_KEY     = 'YOUR_PUBLIC_KEY';
-const EMAILJS_ENABLED        = false;
+const EMAILJS_PUBLIC_KEY       = 'YOUR_PUBLIC_KEY';
+const EMAILJS_ENABLED          = false;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function getListingId() {
@@ -58,6 +59,8 @@ const DEFAULT_PROPERTY = {
   agent_phone: '928-710-8027',
   agent_email: 'austinprettyman9@gmail.com',
   agent_brokerage: '',
+  agent_photo: '',
+  nickname: '',
   hero_image: '',
   photos: '',
   brand_color: '#2563eb',
@@ -67,22 +70,14 @@ const DEFAULT_DOCS = [];
 const RESET_SECONDS = 30;
 
 // ─── MLS Parser ──────────────────────────────────────────────────────────────
-// Extracts fields from raw MLS text (paste, PDF extract, or FlexMLS sheet)
-// Handles: labeled paste text, FlexMLS PDF (single-line double-space delimited),
-// FlexMLS grid layout, and raw blob copy-paste.
 function parseMlsText(rawText) {
-  // ── Step 1: Normalize ──────────────────────────────────────────────────────
-  // pdfjs-dist extracts all text on a page into one flat string joined by spaces.
-  // FlexMLS PDFs use 2+ spaces as field separators. Convert them to newlines so
-  // all the label-based regexes work the same way as on pasted/typed text.
   let t = rawText
-    .replace(/\r\n/g, '\n')          // normalize CRLF
-    .replace(/  +/g, '\n')            // 2+ spaces → newline (FlexMLS PDF)
-    .replace(/\n{3,}/g, '\n\n');     // collapse excessive blank lines
+    .replace(/\r\n/g, '\n')
+    .replace(/  +/g, '\n')
+    .replace(/\n{3,}/g, '\n\n');
 
   const found = {};
 
-  // ── Helpers ────────────────────────────────────────────────────────────────
   function fmtPrice(raw) {
     const n = parseInt(raw.replace(/[,$]/g, ''), 10);
     return isNaN(n) ? raw : '$' + n.toLocaleString('en-US');
@@ -91,8 +86,6 @@ function parseMlsText(rawText) {
     const n = parseInt(raw.replace(/,/g, ''), 10);
     return isNaN(n) ? raw : n.toLocaleString('en-US');
   }
-  // Match a labeled field: returns trimmed value string or null
-  // Stops at next field label (next line or double-space boundary in value)
   function field(patterns) {
     for (const pat of patterns) {
       const re = new RegExp('(?:^|\\n)\\s*' + pat + '\\s*[:#]+\\s*([^\\n]+)', 'im');
@@ -102,10 +95,8 @@ function parseMlsText(rawText) {
     return null;
   }
 
-  // ── Price ──────────────────────────────────────────────────────────────────
   const priceRaw = field(['list(?:ing)?\\s*price', 'asking\\s*price', 'sold\\s*price']);
   if (priceRaw) {
-    // Strip trailing non-price junk (e.g. "  County" after value)
     const priceNum = priceRaw.match(/\$?([\d,]+(?:\.\d{2})?)/);
     if (priceNum) found.price = fmtPrice(priceNum[1]);
   } else {
@@ -113,8 +104,6 @@ function parseMlsText(rawText) {
     if (m) found.price = fmtPrice(m[1]);
   }
 
-  // ── Bedrooms ───────────────────────────────────────────────────────────────
-  // FlexMLS uses "# Bedrooms:   2" — standard uses "Bedrooms: 3" or "Beds: 3"
   const bedRaw = field(['#\\s*bed(?:room)?s?', 'bed(?:room)?s?', 'br', 'bd']);
   if (bedRaw) {
     const m = bedRaw.match(/^(\d+)/);
@@ -124,8 +113,6 @@ function parseMlsText(rawText) {
     if (m) found.bedrooms = m[1];
   }
 
-  // ── Bathrooms ──────────────────────────────────────────────────────────────
-  // FlexMLS uses "# Bathrooms:   2" — also handle "Baths Full / Half" split
   const bathFullField = field(['#\\s*bath(?:room)?s?', 'baths?\\s*full', 'bath(?:room)?s?', 'baths?']);
   const bathHalfField = field(['baths?\\s*(?:half|partial|1\\/2)', 'half\\s*baths?']);
   if (bathFullField) {
@@ -139,8 +126,6 @@ function parseMlsText(rawText) {
     if (m) found.bathrooms = m[1];
   }
 
-  // ── Square Footage ─────────────────────────────────────────────────────────
-  // FlexMLS: "Approx SqFt:   1,178 / County" — strip trailing " / County" etc.
   const sqftRaw = field(['approx\.?\\s*sq\.?\\s*ft', 'sq\.?\\s*ft\.?(?:\\s*(?:heated|living|total))?', 'sqft', 'square\\s*feet?']);
   if (sqftRaw) {
     const m = sqftRaw.match(/^([\d,]+)/);
@@ -150,19 +135,12 @@ function parseMlsText(rawText) {
     if (m) found.sqft = fmtNum(m[1]);
   }
 
-  // ── Address ────────────────────────────────────────────────────────────────
-  // FlexMLS: "Address:   9123 W Arden LN, Bellemont, AZ 86015"
-  // Extract just the street part (before the first comma = city separator)
   const addrRaw = field(['address', 'property\\s*address', 'street\\s*address']);
   if (addrRaw) {
-    // "9123 W Arden LN, Bellemont, AZ 86015" → street = "9123 W Arden LN"
-    // city = "Bellemont, AZ 86015"
     const commaIdx = addrRaw.indexOf(',');
     if (commaIdx > 0) {
       found.address = addrRaw.substring(0, commaIdx).trim();
-      // Also extract city from the remainder if not already found
       const cityPart = addrRaw.substring(commaIdx + 1).trim();
-      // cityPart looks like "Bellemont, AZ 86015" or "Bellemont AZ 86015"
       const cityM = cityPart.match(/^([A-Za-z][A-Za-z ]+?)[,\s]+([A-Z]{2})\s+(\d{5})/);
       if (cityM) found._cityFromAddr = `${cityM[1].trim()}, ${cityM[2]} ${cityM[3]}`;
     } else {
@@ -173,8 +151,6 @@ function parseMlsText(rawText) {
     if (m) found.address = m[1].trim();
   }
 
-  // ── City / State / ZIP ─────────────────────────────────────────────────────
-  // Use city parsed inline from Address field if available
   if (found._cityFromAddr) {
     found.city = found._cityFromAddr;
     delete found._cityFromAddr;
@@ -182,17 +158,13 @@ function parseMlsText(rawText) {
     const cityLabelMatch = t.match(/(?:^|\n)\s*(?:city[\s/]*state[\s/]*zip(?:code)?|city\s*[,/]\s*state|city)\s*[:#\t ]+([^\n]+)/im);
     if (cityLabelMatch) {
       let raw = cityLabelMatch[1].trim();
-      // Already fully inline: "Flagstaff, AZ 86001" or "Flagstaff AZ 86001"
       const inlineFull = raw.match(/^([A-Za-z][A-Za-z ]+?)[,\s]+([A-Z]{2})\s+(\d{5})/);
       if (inlineFull) {
         raw = `${inlineFull[1].trim()}, ${inlineFull[2]} ${inlineFull[3]}`;
       } else {
-        // After normalization, State and Zip may be on separate lines: look ahead
         const stateM = t.match(/(?:^|\n)\s*State\s*[:#]+\s*([A-Z]{2})/im);
         const zipM   = t.match(/(?:^|\n)\s*Zip(?:\s*Code)?\s*[:#]+\s*(\d{5})/im);
-        if (stateM && zipM) {
-          raw = `${raw}, ${stateM[1]} ${zipM[1]}`;
-        }
+        if (stateM && zipM) raw = `${raw}, ${stateM[1]} ${zipM[1]}`;
       }
       found.city = raw;
     } else {
@@ -201,46 +173,34 @@ function parseMlsText(rawText) {
     }
   }
 
-  // ── Description / Remarks ──────────────────────────────────────────────────
   const descRaw = field(['public\\s*remarks?', 'agent\\s*remarks?', 'remarks?', 'description']);
   if (descRaw) found.description = descRaw.replace(/\s+/g, ' ').trim();
 
-  // ── Agent Name ─────────────────────────────────────────────────────────────
-  // FlexMLS: "Presented By :  Austin J Prettyman  RE/MAX Fine Properties..."
-  // Standard: "Listing Agent: Jane Smith"
   const agentPresentedMatch = t.match(/(?:^|\n)\s*Presented\s*By\s*:?\s*([A-Za-z][A-Za-z .,''-]+?)(?=\n|$)/im);
   const agentLabelRaw = field(['listing\\s*agent', 'agent\\s*name', 'listed\\s*by', 'co[\\s-]?list(?:ing)?\\s*agent']);
   if (agentPresentedMatch) {
     found.agent_name = agentPresentedMatch[1].trim().replace(/[,\s]+$/, '');
   } else if (agentLabelRaw) {
-    // Stop before next inline label (double-space + word + colon)
     const stopIdx = agentLabelRaw.search(/\s{2,}[A-Za-z]+\s*:/);
     found.agent_name = (stopIdx > 0 ? agentLabelRaw.substring(0, stopIdx) : agentLabelRaw).trim().replace(/[,\s]+$/, '');
   }
 
-  // ── Agent Phone ────────────────────────────────────────────────────────────
   const phoneLabelRaw = field(['agent\\s*phone', 'listing\\s*agent\\s*phone', 'cell(?:ular)?', 'mobile', 'office\\s*phone', 'phone', 'contact(?:\\s*#)?']);
   if (phoneLabelRaw) {
     const m = phoneLabelRaw.match(/[\d()+.\s-]{7,}/);
     if (m) found.agent_phone = m[0].trim().replace(/\s+/g, ' ');
   } else {
-    // Scan for bare phone number anywhere in text
     const m = t.match(/\(?\d{3}\)?[\s.\-]\d{3}[\s.\-]\d{4}/);
     if (m) found.agent_phone = m[0].trim();
   }
 
-  // ── Agent Email ────────────────────────────────────────────────────────────
   const emailM = t.match(/[\w.+\-]+@[\w.\-]+\.[a-z]{2,}/i);
   if (emailM) found.agent_email = emailM[0];
 
-  // ── Brokerage ──────────────────────────────────────────────────────────────
-  // FlexMLS: "Listing Office:   RE/MAX Fine Properties"
-  // Also line after "Presented By: Agent Name" is often brokerage
   const brokerRaw = field(['listing\\s*(?:broker(?:age)?|office|firm)', 'brokerage', 'broker(?!age)', 'company', 'office']);
   if (brokerRaw) {
     found.agent_brokerage = brokerRaw.trim();
   } else if (agentPresentedMatch) {
-    // In FlexMLS PDFs, the line right after the agent name is the brokerage
     const afterAgent = t.substring(t.indexOf(agentPresentedMatch[0]) + agentPresentedMatch[0].length);
     const nextLine = afterAgent.match(/^\s*([^\n]+)/);
     if (nextLine && nextLine[1].trim() && !nextLine[1].match(/\d{5}|@|\d{3}[.\-]\d{3}/)) {
@@ -248,8 +208,7 @@ function parseMlsText(rawText) {
     }
   }
 
-  // ── Open House Date ────────────────────────────────────────────────────────
-  const ohDateLabelRaw = field(['open\\s*house\\s*date']);
+  const ohDateLabelRaw   = field(['open\\s*house\\s*date']);
   const ohDateCombinedRaw = field(['open\\s*house']);
   if (ohDateLabelRaw) {
     let d = ohDateLabelRaw.replace(/\s*\d{1,2}(?::\d{2})?\s*(?:AM|PM).*/i, '').trim();
@@ -261,9 +220,8 @@ function parseMlsText(rawText) {
     found.open_house_date = d;
   }
 
-  // ── Open House Time ────────────────────────────────────────────────────────
-  const ohTimeLabelRaw = field(['open\\s*house\\s*time']);
-  const ohTimeInlineM = t.match(/\b(\d{1,2}(?::\d{2})?\s*(?:AM|PM)\s*(?:–|—|-|to)\s*\d{1,2}(?::\d{2})?\s*(?:AM|PM))\b/i);
+  const ohTimeLabelRaw  = field(['open\\s*house\\s*time']);
+  const ohTimeInlineM   = t.match(/\b(\d{1,2}(?::\d{2})?\s*(?:AM|PM)\s*(?:–|—|-|to)\s*\d{1,2}(?::\d{2})?\s*(?:AM|PM))\b/i);
   if (ohTimeLabelRaw) found.open_house_time = ohTimeLabelRaw.trim();
   else if (ohTimeInlineM) found.open_house_time = ohTimeInlineM[1].trim();
 
@@ -271,13 +229,11 @@ function parseMlsText(rawText) {
 }
 
 // ─── PDF Text Extractor ──────────────────────────────────────────────────────
-// Import worker as a local URL so we never depend on an external CDN version
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
 async function extractTextFromPdf(file) {
   try {
     const pdfjsLib = await import('pdfjs-dist');
-    // Use the locally-bundled worker — avoids cdnjs version mismatch 404s
     pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
     const arrayBuffer = await file.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
@@ -285,8 +241,6 @@ async function extractTextFromPdf(file) {
     for (let i = 1; i <= Math.min(pdf.numPages, 5); i++) {
       const page = await pdf.getPage(i);
       const content = await page.getTextContent();
-      // Use double-space as separator so parseMlsText normalization fires correctly
-      // (FlexMLS PDFs are all on one line; 2+ spaces → newlines in the parser)
       fullText += content.items.map(item => item.str).join('  ') + '\n';
     }
     return fullText;
@@ -306,17 +260,143 @@ function fileToBase64(file) {
   });
 }
 
+// ─── #4 Countdown Timer Hook ─────────────────────────────────────────────────
+// Parses "1:00 PM – 4:00 PM" and returns a live status string
+function useOpenHouseCountdown(dateStr, timeStr) {
+  const [label, setLabel] = useState('');
+
+  useEffect(() => {
+    function parse() {
+      if (!timeStr) return '';
+      // Try to extract start & end times from timeStr e.g. "1:00 PM – 4:00 PM"
+      const m = timeStr.match(/(\d{1,2}(?::\d{2})?\s*(?:AM|PM))\s*(?:–|—|-|to)\s*(\d{1,2}(?::\d{2})?\s*(?:AM|PM))/i);
+      if (!m) return '';
+
+      function toDate(tstr) {
+        const now = new Date();
+        const d = new Date(now.toDateString() + ' ' + tstr.trim());
+        return isNaN(d) ? null : d;
+      }
+
+      const start = toDate(m[1]);
+      const end   = toDate(m[2]);
+      if (!start || !end) return '';
+
+      const now  = Date.now();
+      const diff = start - now;
+      const diffEnd = end - now;
+
+      if (diffEnd < 0) return ''; // over
+      if (diff > 0) {
+        // hasn't started
+        const totalMin = Math.floor(diff / 60000);
+        const h = Math.floor(totalMin / 60);
+        const min = totalMin % 60;
+        if (h > 0) return `Starts in ${h}h ${min}m`;
+        if (min > 0) return `Starts in ${min}m`;
+        return 'Starting now!';
+      }
+      // in progress
+      const totalMin = Math.floor(diffEnd / 60000);
+      const h = Math.floor(totalMin / 60);
+      const min = totalMin % 60;
+      if (h > 0) return `Ends in ${h}h ${min}m`;
+      if (min > 0) return `Ends in ${min}m`;
+      return 'Ending soon!';
+    }
+
+    setLabel(parse());
+    const interval = setInterval(() => setLabel(parse()), 30000);
+    return () => clearInterval(interval);
+  }, [dateStr, timeStr]);
+
+  return label;
+}
+
+// ─── #1 Toast System ─────────────────────────────────────────────────────────
+function ToastContainer({ toasts, onDismiss }) {
+  return (
+    <div className="toast-container">
+      {toasts.map(t => (
+        <div key={t.id} className={`toast toast-${t.type || 'info'}`}>
+          <div className="toast-icon">
+            {t.type === 'success' ? <CheckCircle size={16}/> :
+             t.type === 'lead'    ? <Bell size={16}/> :
+             <AlertCircle size={16}/>}
+          </div>
+          <div className="toast-body">
+            <p className="toast-title">{t.title}</p>
+            {t.message && <p className="toast-msg">{t.message}</p>}
+          </div>
+          {t.action && (
+            <a href={t.action.href} className="toast-action-btn">{t.action.label}</a>
+          )}
+          <button className="toast-close" onClick={() => onDismiss(t.id)}><X size={13}/></button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function useToasts() {
+  const [toasts, setToasts] = useState([]);
+  const push = useCallback((toast) => {
+    const id = Date.now() + Math.random();
+    setToasts(prev => [...prev, { ...toast, id }]);
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), toast.duration || 5000);
+    return id;
+  }, []);
+  const dismiss = useCallback((id) => setToasts(prev => prev.filter(t => t.id !== id)), []);
+  return { toasts, push, dismiss };
+}
+
+// ─── #5 Dark Mode Hook ───────────────────────────────────────────────────────
+function useDarkMode() {
+  const [dark, setDark] = useState(() => loadLocal('global', 'darkMode', false));
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', dark);
+    saveLocal('global', 'darkMode', dark);
+  }, [dark]);
+  return [dark, setDark];
+}
+
+// ─── #10 Skeleton Rows ───────────────────────────────────────────────────────
+function SkeletonRows({ count = 5 }) {
+  return (
+    <>
+      {Array.from({ length: count }).map((_, i) => (
+        <tr key={i} className="skeleton-row">
+          <td><div className="skel skel-sm"/></td>
+          <td>
+            <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+              <div className="skel skel-avatar"/>
+              <div className="skel skel-md"/>
+            </div>
+          </td>
+          <td><div className="skel skel-lg"/></td>
+          <td><div className="skel skel-sm"/></td>
+          <td><div className="skel skel-pill"/></td>
+          <td><div className="skel skel-sm"/></td>
+          <td><div className="skel skel-md"/></td>
+        </tr>
+      ))}
+    </>
+  );
+}
+
 // ─── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
   const listingId = getListingId();
+  const { toasts, push: pushToast, dismiss: dismissToast } = useToasts();
+  const [dark, setDark] = useDarkMode();
 
   const [view, setView] = useState(
     new URLSearchParams(window.location.search).has('listing') ? 'signin' : 'home'
   );
   const [authenticated, setAuthenticated] = useState(false);
-  const [property, setProperty] = useState(() => loadLocal(listingId, 'property', DEFAULT_PROPERTY));
-  const [docs, setDocs]         = useState(() => loadLocal(listingId, 'docs', DEFAULT_DOCS));
-  const [leads, setLeads]       = useState([]);
+  const [property, setProperty]   = useState(() => loadLocal(listingId, 'property', DEFAULT_PROPERTY));
+  const [docs, setDocs]           = useState(() => loadLocal(listingId, 'docs', DEFAULT_DOCS));
+  const [leads, setLeads]         = useState([]);
   const [leadsLoading, setLeadsLoading] = useState(false);
   const [signedInVisitor, setSignedInVisitor] = useState(null);
   const [allListings, setAllListings] = useState(() => loadLocal('global', 'listings', ['default']));
@@ -331,6 +411,33 @@ export default function App() {
   useEffect(() => {
     if ((view === 'dashboard' || view === 'analytics') && authenticated) fetchLeads();
   }, [view, authenticated]);
+
+  // ── #1 Supabase Realtime subscription ──────────────────────────────────────
+  useEffect(() => {
+    if (!authenticated) return;
+    const channel = supabase
+      .channel(`leads-${listingId}`)
+      .on('postgres_changes', {
+        event: 'INSERT', schema: 'public', table: 'leads',
+        filter: `listing_id=eq.${listingId}`
+      }, (payload) => {
+        const l = payload.new;
+        setLeads(prev => [l, ...prev]);
+        const interestLabel = {
+          ready_to_buy: '✅ Ready to Buy', very_interested: '🔥 Very Interested',
+          browsing: '🏘️ Browsing', just_looking: '👀 Just Looking'
+        };
+        pushToast({
+          type: 'lead',
+          title: `New sign-in: ${l.name}`,
+          message: interestLabel[l.interest] || l.interest || '',
+          action: l.phone ? { href: `tel:${l.phone}`, label: '📞 Call' } : undefined,
+          duration: 7000,
+        });
+      })
+      .subscribe();
+    return () => supabase.removeChannel(channel);
+  }, [authenticated, listingId]);
 
   async function fetchLeads() {
     setLeadsLoading(true);
@@ -387,14 +494,19 @@ export default function App() {
   }
 
   // ── Router ─────────────────────────────────────────────────────────────────
-  if (view === 'home')        return <ListingsHome allListings={allListings} onAddListing={addListing} onSelect={() => {}} currentListing={listingId} onViewSignIn={() => setView('signin')} />;
-  if (view === 'admin_login') return <AdminLogin password={property.admin_password} onSuccess={() => { setAuthenticated(true); setView('dashboard'); }} onBack={() => setView('signin')} />;
-  if (view === 'dashboard' && authenticated)  return <Dashboard property={property} leads={leads} loading={leadsLoading} listingId={listingId} onRefresh={fetchLeads} onSettings={() => setView('settings')} onQR={() => setView('qr')} onAnalytics={() => setView('analytics')} onLogout={logout} />;
-  if (view === 'settings' && authenticated)   return <SettingsPanel property={property} docs={docs} onSave={(p, d) => { setProperty(p); setDocs(d); setView('dashboard'); }} onBack={() => setView('dashboard')} />;
-  if (view === 'qr' && authenticated)         return <QRGenerator listingId={listingId} property={property} onBack={() => setView('dashboard')} />;
-  if (view === 'analytics' && authenticated)  return <Analytics leads={leads} property={property} onBack={() => setView('dashboard')} />;
-  if (view === 'thankyou')    return <ThankYou visitor={signedInVisitor} property={property} docs={docs} onBack={() => { setSignedInVisitor(null); setView('signin'); }} />;
-  return <SignInForm property={property} leads={leads} onSubmit={submitLead} onAdminClick={() => setView('admin_login')} />;
+  return (
+    <>
+      <ToastContainer toasts={toasts} onDismiss={dismissToast}/>
+      {view === 'home'        && <ListingsHome allListings={allListings} onAddListing={addListing} onSelect={() => {}} currentListing={listingId} onViewSignIn={() => setView('signin')}/>}
+      {view === 'admin_login' && <AdminLogin password={property.admin_password} onSuccess={() => { setAuthenticated(true); setView('dashboard'); }} onBack={() => setView('signin')}/>}
+      {view === 'dashboard'  && authenticated && <Dashboard property={property} leads={leads} loading={leadsLoading} listingId={listingId} onRefresh={fetchLeads} onSettings={() => setView('settings')} onQR={() => setView('qr')} onAnalytics={() => setView('analytics')} onLogout={logout} dark={dark} setDark={setDark}/>}
+      {view === 'settings'   && authenticated && <SettingsPanel property={property} docs={docs} onSave={(p, d) => { setProperty(p); setDocs(d); setView('dashboard'); }} onBack={() => setView('dashboard')} dark={dark} setDark={setDark}/>}
+      {view === 'qr'         && authenticated && <QRGenerator listingId={listingId} property={property} onBack={() => setView('dashboard')}/>}
+      {view === 'analytics'  && authenticated && <Analytics leads={leads} property={property} onBack={() => setView('dashboard')}/>}
+      {view === 'thankyou'   && <ThankYou visitor={signedInVisitor} property={property} docs={docs} onBack={() => { setSignedInVisitor(null); setView('signin'); }}/>}
+      {view === 'signin'     && <SignInForm property={property} leads={leads} onSubmit={submitLead} onAdminClick={() => setView('admin_login')}/>}
+    </>
+  );
 }
 
 // ─── Listings Home ────────────────────────────────────────────────────────────
@@ -423,6 +535,8 @@ function ListingsHome({ allListings, onAddListing, onViewSignIn, currentListing 
               <div key={id} className="listing-card" onClick={() => goSignIn(id)}>
                 <div className="listing-card-color" style={{ background: prop.brand_color || '#2563eb' }}/>
                 <div className="listing-card-body">
+                  {/* #7 Nickname */}
+                  {prop.nickname && <p className="listing-card-nickname"><Tag size={10}/> {prop.nickname}</p>}
                   <p className="listing-card-address">{prop.address}</p>
                   <p className="listing-card-city">{prop.city}</p>
                   <div className="listing-card-meta">
@@ -468,6 +582,9 @@ function SignInForm({ property, leads, onSubmit, onAdminClick }) {
   const [submitting, setSubmitting] = useState(false);
   const [alreadySeen, setAlreadySeen] = useState(false);
 
+  // #4 countdown
+  const countdown = useOpenHouseCountdown(property.open_house_date, property.open_house_time);
+
   function validate() {
     const e = {};
     if (!form.name.trim()) e.name = 'Name is required';
@@ -489,16 +606,20 @@ function SignInForm({ property, leads, onSubmit, onAdminClick }) {
     setSubmitting(false);
   }
 
-  const photos = property.photos
-    ? property.photos.split(',').map(s => s.trim()).filter(Boolean)
-    : [];
-
   return (
     <div className="signin-page">
       <div className="signin-hero" style={{ background: `linear-gradient(135deg, ${property.brand_color}cc 0%, ${property.brand_color} 100%)` }}>
         {property.hero_image && <img src={property.hero_image} alt="Property" className="hero-img"/>}
         <div className="hero-overlay">
-          <div className="hero-badge">Open House</div>
+          <div className="hero-top-row">
+            <div className="hero-badge">Open House</div>
+            {/* #3 Social proof badge */}
+            {leads.length > 0 && (
+              <div className="hero-social-proof">
+                <Users size={12}/> {leads.length} {leads.length === 1 ? 'person has' : 'people have'} visited
+              </div>
+            )}
+          </div>
           <h1 className="hero-address">{property.address}</h1>
           <p className="hero-city">{property.city}</p>
           <p className="hero-price">{property.price}</p>
@@ -510,6 +631,8 @@ function SignInForm({ property, leads, onSubmit, onAdminClick }) {
           <div className="hero-time">
             <span><Calendar size={13}/> {property.open_house_date}</span>
             <span><Clock size={13}/> {property.open_house_time}</span>
+            {/* #4 Live countdown */}
+            {countdown && <span className="hero-countdown"><Timer size={12}/> {countdown}</span>}
           </div>
         </div>
       </div>
@@ -571,7 +694,11 @@ function SignInForm({ property, leads, onSubmit, onAdminClick }) {
 
         {property.agent_name && (
           <div className="agent-strip">
-            <div className="agent-avatar" style={{ background: property.brand_color }}>{property.agent_name.charAt(0)}</div>
+            {/* #8 Agent photo */}
+            {property.agent_photo
+              ? <img src={property.agent_photo} alt={property.agent_name} className="agent-avatar agent-photo-img"/>
+              : <div className="agent-avatar" style={{ background: property.brand_color }}>{property.agent_name.charAt(0)}</div>
+            }
             <div>
               <p className="agent-name">{property.agent_name}</p>
               <p className="agent-brokerage">{property.agent_brokerage}</p>
@@ -684,7 +811,10 @@ function ThankYou({ visitor, property, docs, onBack }) {
         )}
         {property.agent_name && (
           <div className="agent-card">
-            <div className="agent-avatar large" style={{ background: property.brand_color }}>{property.agent_name.charAt(0)}</div>
+            {property.agent_photo
+              ? <img src={property.agent_photo} alt={property.agent_name} className="agent-avatar large agent-photo-img"/>
+              : <div className="agent-avatar large" style={{ background: property.brand_color }}>{property.agent_name.charAt(0)}</div>
+            }
             <div className="agent-info">
               <p className="agent-name">{property.agent_name}</p>
               <p className="agent-brokerage">{property.agent_brokerage}</p>
@@ -740,7 +870,7 @@ function AdminLogin({ password: correctPassword, onSuccess, onBack }) {
 }
 
 // ─── Admin Dashboard ──────────────────────────────────────────────────────────
-function Dashboard({ property, leads, loading, listingId, onRefresh, onSettings, onQR, onAnalytics, onLogout }) {
+function Dashboard({ property, leads, loading, listingId, onRefresh, onSettings, onQR, onAnalytics, onLogout, dark, setDark }) {
   const [selectedLead, setSelectedLead] = useState(null);
   const [filter, setFilter] = useState('all');
 
@@ -774,17 +904,31 @@ function Dashboard({ property, leads, loading, listingId, onRefresh, onSettings,
   const interestColor = { ready_to_buy: '#16a34a', very_interested: '#ea580c', browsing: '#2563eb', just_looking: '#64748b' };
   const interestLabel = { ready_to_buy: '✅ Ready to Buy', very_interested: '🔥 Very Interested', browsing: '🏘️ Browsing', just_looking: '👀 Just Looking' };
 
+  // #6 Summary counts
+  const summaryCounts = {
+    hot:        leads.filter(l => l.interest === 'ready_to_buy' || l.interest === 'very_interested').length,
+    browsing:   leads.filter(l => l.interest === 'browsing').length,
+    looking:    leads.filter(l => l.interest === 'just_looking').length,
+    firstTime:  leads.filter(l => l.first_time_buyer).length,
+  };
+
   return (
     <div className="admin-page">
       <header className="admin-header">
         <div className="admin-header-left">
           <div className="admin-logo-badge" style={{ background: property.brand_color }}><Home size={18}/></div>
           <div>
-            <h1 className="admin-title">Dashboard</h1>
+            <h1 className="admin-title">
+              {property.nickname || 'Dashboard'}
+            </h1>
             <p className="admin-subtitle">{property.address} · {property.city}</p>
           </div>
         </div>
         <div className="admin-header-actions">
+          {/* #5 Dark mode toggle */}
+          <button className="btn-icon" title={dark ? 'Light mode' : 'Dark mode'} onClick={() => setDark(d => !d)}>
+            {dark ? <Sun size={17}/> : <Moon size={17}/>}
+          </button>
           <button className="btn-icon" title="Analytics" onClick={onAnalytics}><BarChart2 size={18}/></button>
           <button className="btn-icon" title="QR Code" onClick={onQR}><QrCode size={18}/></button>
           <button className="btn-icon" title="Settings" onClick={onSettings}><Settings size={18}/></button>
@@ -820,6 +964,17 @@ function Dashboard({ property, leads, loading, listingId, onRefresh, onSettings,
               <button className="btn-primary-sm" onClick={exportCSV} disabled={!leads.length}><Download size={14}/> CSV</button>
             </div>
           </div>
+
+          {/* #6 Interest summary bar */}
+          {leads.length > 0 && (
+            <div className="interest-summary-bar">
+              {summaryCounts.hot       > 0 && <span className="isb-chip isb-hot"><span>🔥</span> {summaryCounts.hot} Hot</span>}
+              {summaryCounts.browsing  > 0 && <span className="isb-chip isb-browsing"><span>🏘️</span> {summaryCounts.browsing} Browsing</span>}
+              {summaryCounts.looking   > 0 && <span className="isb-chip isb-looking"><span>👀</span> {summaryCounts.looking} Looking</span>}
+              {summaryCounts.firstTime > 0 && <span className="isb-chip isb-first"><span>⭐</span> {summaryCounts.firstTime} First-Time</span>}
+            </div>
+          )}
+
           <div className="filter-tabs">
             {FILTERS.map(f => (
               <button key={f.val} className={`filter-tab${filter === f.val ? ' active' : ''}`}
@@ -830,7 +985,15 @@ function Dashboard({ property, leads, loading, listingId, onRefresh, onSettings,
             ))}
           </div>
           {loading ? (
-            <div className="empty-state"><RefreshCw size={24} className="spin"/> Loading…</div>
+            // #10 Skeleton loading
+            <div className="table-wrap">
+              <table className="leads-table">
+                <thead>
+                  <tr><th>#</th><th>Name</th><th>Email</th><th>Phone</th><th>Interest</th><th>Notes</th><th>Signed In</th></tr>
+                </thead>
+                <tbody><SkeletonRows count={5}/></tbody>
+              </table>
+            </div>
           ) : filtered.length === 0 ? (
             <div className="empty-state"><Users size={40} className="empty-icon"/><p>No leads yet</p></div>
           ) : (
@@ -840,8 +1003,10 @@ function Dashboard({ property, leads, loading, listingId, onRefresh, onSettings,
                   <tr><th>#</th><th>Name</th><th>Email</th><th>Phone</th><th>Interest</th><th>Notes</th><th>Signed In</th></tr>
                 </thead>
                 <tbody>
+                  {/* #9 Staggered row animations */}
                   {filtered.map((l, i) => (
-                    <tr key={l.id} className="lead-row" onClick={() => setSelectedLead(l)}>
+                    <tr key={l.id} className="lead-row" onClick={() => setSelectedLead(l)}
+                      style={{ animationDelay: `${i * 30}ms` }}>
                       <td className="lead-num">{i + 1}</td>
                       <td className="lead-name">
                         <div className="lead-avatar" style={{ background: property.brand_color }}>{l.name?.charAt(0)?.toUpperCase()}</div>
@@ -1021,7 +1186,7 @@ function Analytics({ leads, property, onBack }) {
 
 // ─── MLS Analyzer Modal ───────────────────────────────────────────────────────
 function MlsAnalyzer({ onApply, onClose, brandColor }) {
-  const [mode, setMode]       = useState('paste'); // 'paste' | 'pdf' | 'image'
+  const [mode, setMode]       = useState('paste');
   const [text, setText]       = useState('');
   const [parsing, setParsing] = useState(false);
   const [result, setResult]   = useState(null);
@@ -1040,9 +1205,8 @@ function MlsAnalyzer({ onApply, onClose, brandColor }) {
   async function analyze() {
     const src = text.trim();
     if (!src) return;
-    setParsing(true);
-    setResult(null);
-    await new Promise(r => setTimeout(r, 400)); // brief UX delay
+    setParsing(true); setResult(null);
+    await new Promise(r => setTimeout(r, 400));
     const parsed = parseMlsText(src);
     setResult(Object.keys(parsed).length ? parsed : {});
     setParsing(false);
@@ -1051,37 +1215,24 @@ function MlsAnalyzer({ onApply, onClose, brandColor }) {
   async function handleFile(e) {
     const file = e.target.files?.[0];
     if (!file) return;
-    setFileName(file.name);
-    setParsing(true);
-    setResult(null);
-    setText('');
-
+    setFileName(file.name); setParsing(true); setResult(null); setText('');
     if (file.type === 'application/pdf') {
       const extracted = await extractTextFromPdf(file);
       if (extracted) {
         setText(extracted);
         const parsed = parseMlsText(extracted);
         setResult(Object.keys(parsed).length ? parsed : {});
-      } else {
-        setResult({});
-      }
+      } else { setResult({}); }
     } else if (file.type.startsWith('image/')) {
-      // For images: convert to base64 and show in text box as note
-      // (OCR would need a cloud service; we fall back to manual paste)
       const b64 = await fileToBase64(file);
-      setText('');
-      setResult(null);
-      setMode('image_loaded');
-      // store the preview
-      setFileName(b64);
+      setText(''); setResult(null); setMode('image_loaded'); setFileName(b64);
     }
     setParsing(false);
   }
 
   function handleApply() {
     if (!result || !Object.keys(result).length) return;
-    onApply(result);
-    setApplied(true);
+    onApply(result); setApplied(true);
     setTimeout(() => { setApplied(false); onClose(); }, 1200);
   }
 
@@ -1090,7 +1241,6 @@ function MlsAnalyzer({ onApply, onClose, brandColor }) {
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="mls-modal" onClick={e => e.stopPropagation()}>
-        {/* Header */}
         <div className="mls-modal-header" style={{ background: `linear-gradient(135deg, ${brandColor}dd, ${brandColor})` }}>
           <div className="mls-modal-title-row">
             <div className="mls-modal-icon"><Scan size={22}/></div>
@@ -1100,7 +1250,6 @@ function MlsAnalyzer({ onApply, onClose, brandColor }) {
             </div>
             <button className="mls-close-btn" onClick={onClose}><X size={18}/></button>
           </div>
-          {/* Mode tabs */}
           <div className="mls-tabs">
             {[
               { id: 'paste', icon: <Clipboard size={14}/>, label: 'Paste Text' },
@@ -1114,29 +1263,17 @@ function MlsAnalyzer({ onApply, onClose, brandColor }) {
             ))}
           </div>
         </div>
-
         <div className="mls-modal-body">
-          {/* ── Paste Mode ── */}
           {mode === 'paste' && (
             <div className="mls-paste-area">
-              <textarea
-                rows={10}
-                placeholder={`Paste your MLS listing info here…\n\nExamples of what gets detected:\n• Price, Beds, Baths, Sq Ft\n• Address & City/State/ZIP\n• Agent name, phone & email\n• Property description / remarks\n• Open house date & time`}
-                value={text}
-                onChange={e => { setText(e.target.value); setResult(null); }}
-                className="mls-textarea"
-              />
-              <button
-                className="btn-primary mls-analyze-btn"
-                style={{ background: brandColor }}
-                onClick={analyze}
-                disabled={!text.trim() || parsing}>
+              <textarea rows={10} placeholder={`Paste your MLS listing info here…`}
+                value={text} onChange={e => { setText(e.target.value); setResult(null); }} className="mls-textarea"/>
+              <button className="btn-primary mls-analyze-btn" style={{ background: brandColor }}
+                onClick={analyze} disabled={!text.trim() || parsing}>
                 {parsing ? <><Loader size={15} className="spin"/> Analyzing…</> : <><Sparkles size={15}/> Analyze &amp; Fill Fields</>}
               </button>
             </div>
           )}
-
-          {/* ── PDF Mode ── */}
           {(mode === 'pdf' || mode === 'image_loaded') && (
             <div className="mls-upload-area">
               <input ref={fileRef} type="file" accept=".pdf,image/*" style={{ display:'none' }} onChange={handleFile}/>
@@ -1154,16 +1291,14 @@ function MlsAnalyzer({ onApply, onClose, brandColor }) {
                   <img src={fileName} alt="Uploaded MLS" className="mls-image-preview"/>
                   <div className="mls-image-note">
                     <AlertCircle size={14}/>
-                    <span>Image uploaded — automatic OCR isn't available in browser mode. Please manually copy the text from your image and switch to <strong>Paste Text</strong> mode, or type the key details below.</span>
+                    <span>Image uploaded — please switch to <strong>Paste Text</strong> mode to enter details manually.</span>
                   </div>
                   <button className="btn-outline-sm" style={{ marginTop:8 }} onClick={() => { setMode('paste'); setFileName(''); }}>
                     Switch to Paste Text
                   </button>
                 </div>
               ) : null}
-              {parsing && (
-                <div className="mls-loading"><Loader size={20} className="spin" style={{ color: brandColor }}/> <span>Extracting text from PDF…</span></div>
-              )}
+              {parsing && <div className="mls-loading"><Loader size={20} className="spin" style={{ color: brandColor }}/> <span>Extracting text from PDF…</span></div>}
               {text && !parsing && mode !== 'image_loaded' && (
                 <div className="mls-pdf-extracted">
                   <p className="mls-extracted-label"><CheckCircle size={13} style={{ color:'#16a34a' }}/> PDF text extracted — {text.length} characters</p>
@@ -1174,14 +1309,12 @@ function MlsAnalyzer({ onApply, onClose, brandColor }) {
               )}
             </div>
           )}
-
-          {/* ── Results ── */}
           {result !== null && (
             <div className="mls-results">
               <div className={`mls-results-header ${fieldCount > 0 ? 'success' : 'warn'}`}>
                 {fieldCount > 0
                   ? <><CheckCircle size={15}/> Found <strong>{fieldCount} field{fieldCount !== 1 ? 's' : ''}</strong> — review &amp; apply below</>
-                  : <><AlertCircle size={15}/> No recognizable fields detected — try pasting more complete MLS text</>
+                  : <><AlertCircle size={15}/> No recognizable fields detected</>
                 }
               </div>
               {fieldCount > 0 && (
@@ -1194,13 +1327,8 @@ function MlsAnalyzer({ onApply, onClose, brandColor }) {
                       </div>
                     ))}
                   </div>
-                  <button
-                    className="btn-primary"
-                    style={{ background: brandColor, marginTop: 16 }}
-                    onClick={handleApply}>
-                    {applied
-                      ? <><Check size={15}/> Applied!</>
-                      : <><Sparkles size={15}/> Apply {fieldCount} Field{fieldCount !== 1 ? 's' : ''} to Listing</>}
+                  <button className="btn-primary" style={{ background: brandColor, marginTop: 16 }} onClick={handleApply}>
+                    {applied ? <><Check size={15}/> Applied!</> : <><Sparkles size={15}/> Apply {fieldCount} Field{fieldCount !== 1 ? 's' : ''} to Listing</>}
                   </button>
                   <p className="mls-apply-note">Only detected fields are updated — empty fields stay as-is.</p>
                 </>
@@ -1214,51 +1342,41 @@ function MlsAnalyzer({ onApply, onClose, brandColor }) {
 }
 
 // ─── Enhanced Photo Upload ────────────────────────────────────────────────────
-// Supports: URL input, paste from clipboard (screenshots), file upload, drag-and-drop
 function PhotoUploader({ photos, onChange, brandColor }) {
-  const [urlInput, setUrlInput]     = useState('');
-  const [dragOver, setDragOver]     = useState(false);
-  const [pasteHint, setPasteHint]   = useState(false);
-  const [tab, setTab]               = useState('upload'); // 'upload' | 'url'
-  const fileRef  = useRef(null);
-  const dropRef  = useRef(null);
-
-  // photos is already an array passed in
-  const list = photos; // string[]
+  const [urlInput, setUrlInput]   = useState('');
+  const [dragOver, setDragOver]   = useState(false);
+  const [pasteHint, setPasteHint] = useState(false);
+  const [tab, setTab]             = useState('upload');
+  const fileRef = useRef(null);
+  const dropRef = useRef(null);
+  const list = photos;
 
   function addUrl() {
     const urls = urlInput.split('\n').map(s => s.trim()).filter(s => s.startsWith('http'));
     if (!urls.length) return;
-    onChange([...list, ...urls]);
-    setUrlInput('');
+    onChange([...list, ...urls]); setUrlInput('');
   }
 
-  function removePhoto(idx) {
-    onChange(list.filter((_, i) => i !== idx));
-  }
+  function removePhoto(idx) { onChange(list.filter((_, i) => i !== idx)); }
 
-  // Convert image file to base64 data URL and add to list
   async function addImageFile(file) {
     if (!file || !file.type.startsWith('image/')) return;
     const b64 = await fileToBase64(file);
     onChange([...list, b64]);
   }
 
-  // Handle file input
   async function handleFileInput(e) {
     const files = Array.from(e.target.files || []);
     for (const f of files) await addImageFile(f);
     e.target.value = '';
   }
 
-  // Drag-and-drop
   function handleDragOver(e) { e.preventDefault(); setDragOver(true); }
   function handleDragLeave()  { setDragOver(false); }
   async function handleDrop(e) {
     e.preventDefault(); setDragOver(false);
     const files = Array.from(e.dataTransfer.files || []);
     for (const f of files) await addImageFile(f);
-    // Also handle image items from clipboard drag
     const items = Array.from(e.dataTransfer.items || []);
     for (const item of items) {
       if (item.kind === 'string' && item.type === 'text/uri-list') {
@@ -1267,20 +1385,14 @@ function PhotoUploader({ photos, onChange, brandColor }) {
     }
   }
 
-  // Global paste listener for screenshots (Ctrl+V / Cmd+V)
   useEffect(() => {
     function handlePaste(e) {
-      // Only intercept if our drop zone is visible
       if (!dropRef.current) return;
       const items = Array.from(e.clipboardData?.items || []);
       const imageItem = items.find(i => i.type.startsWith('image/'));
       if (imageItem) {
         const file = imageItem.getAsFile();
-        if (file) {
-          addImageFile(file);
-          setPasteHint(true);
-          setTimeout(() => setPasteHint(false), 2000);
-        }
+        if (file) { addImageFile(file); setPasteHint(true); setTimeout(() => setPasteHint(false), 2000); }
       }
     }
     document.addEventListener('paste', handlePaste);
@@ -1289,93 +1401,93 @@ function PhotoUploader({ photos, onChange, brandColor }) {
 
   return (
     <div className="photo-uploader">
-      {/* Mode tabs */}
       <div className="photo-upload-tabs">
-        <button className={`photo-tab${tab === 'upload' ? ' active' : ''}`}
-          onClick={() => setTab('upload')}
+        <button className={`photo-tab${tab === 'upload' ? ' active' : ''}`} onClick={() => setTab('upload')}
           style={tab === 'upload' ? { color: brandColor, borderBottomColor: brandColor } : {}}>
           <Upload size={13}/> Upload / Paste
         </button>
-        <button className={`photo-tab${tab === 'url' ? ' active' : ''}`}
-          onClick={() => setTab('url')}
+        <button className={`photo-tab${tab === 'url' ? ' active' : ''}`} onClick={() => setTab('url')}
           style={tab === 'url' ? { color: brandColor, borderBottomColor: brandColor } : {}}>
           <Link size={13}/> Add by URL
         </button>
       </div>
-
       {tab === 'upload' && (
-        <div
-          ref={dropRef}
-          className={`photo-drop-zone${dragOver ? ' drag-over' : ''}`}
+        <div ref={dropRef} className={`photo-drop-zone${dragOver ? ' drag-over' : ''}`}
           style={dragOver ? { borderColor: brandColor, background: `color-mix(in srgb, ${brandColor} 6%, white)` } : {}}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-          onClick={() => fileRef.current?.click()}
-        >
+          onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}
+          onClick={() => fileRef.current?.click()}>
           <input ref={fileRef} type="file" accept="image/*" multiple style={{ display: 'none' }} onChange={handleFileInput}/>
           <Camera size={28} style={{ color: brandColor, opacity: .6 }}/>
           <p className="photo-drop-title">Drop photos here, click to browse, or paste a screenshot</p>
-          <p className="photo-drop-sub">
-            <kbd>Ctrl+V</kbd> / <kbd>⌘+V</kbd> to paste directly from clipboard &nbsp;·&nbsp; JPG, PNG, WEBP supported
-          </p>
-          {pasteHint && (
-            <div className="paste-success"><CheckCircle size={14}/> Screenshot pasted!</div>
-          )}
+          <p className="photo-drop-sub"><kbd>Ctrl+V</kbd> / <kbd>⌘+V</kbd> to paste · JPG, PNG, WEBP supported</p>
+          {pasteHint && <div className="paste-success"><CheckCircle size={14}/> Screenshot pasted!</div>}
         </div>
       )}
-
       {tab === 'url' && (
         <div className="photo-url-area">
-          <textarea
-            rows={4}
-            placeholder={"https://example.com/photo1.jpg\nhttps://example.com/photo2.jpg\n\nOne URL per line"}
-            value={urlInput}
-            onChange={e => setUrlInput(e.target.value)}
-            className="photo-url-textarea"
-          />
+          <textarea rows={4} placeholder={"https://example.com/photo1.jpg\n\nOne URL per line"}
+            value={urlInput} onChange={e => setUrlInput(e.target.value)} className="photo-url-textarea"/>
           <button className="btn-primary-sm" style={{ background: brandColor }} onClick={addUrl} disabled={!urlInput.trim()}>
             <Plus size={14}/> Add URLs
           </button>
         </div>
       )}
-
-      {/* Thumbnail grid */}
       {list.length > 0 && (
         <div className="photo-thumb-grid">
           {list.map((src, i) => (
             <div key={i} className="photo-thumb-item">
-              <img
-                src={src}
-                alt={`Photo ${i + 1}`}
-                className="photo-thumb-img"
-                onError={e => { e.target.style.opacity = '0.3'; }}
-              />
-              <button className="photo-thumb-remove" onClick={() => removePhoto(i)} title="Remove">
-                <X size={12}/>
-              </button>
+              <img src={src} alt={`Photo ${i + 1}`} className="photo-thumb-img" onError={e => { e.target.style.opacity = '0.3'; }}/>
+              <button className="photo-thumb-remove" onClick={() => removePhoto(i)} title="Remove"><X size={12}/></button>
               {i === 0 && <span className="photo-thumb-hero-badge">Hero</span>}
             </div>
           ))}
-          {/* Add more button */}
           <div className="photo-thumb-add" onClick={() => { setTab('upload'); fileRef.current?.click(); }}
             style={{ borderColor: brandColor, color: brandColor }}>
             <Plus size={20}/><span>Add</span>
           </div>
         </div>
       )}
+      {list.length > 0 && <p className="photo-count-note">{list.length} photo{list.length !== 1 ? 's' : ''} · First photo is used as the hero banner</p>}
+    </div>
+  );
+}
 
-      {list.length > 0 && (
-        <p className="photo-count-note">
-          {list.length} photo{list.length !== 1 ? 's' : ''} · First photo is used as the hero banner
-        </p>
+// ─── #8 Agent Photo Uploader ──────────────────────────────────────────────────
+function AgentPhotoUploader({ value, onChange, brandColor }) {
+  const fileRef = useRef(null);
+
+  async function handleFile(e) {
+    const file = e.target.files?.[0];
+    if (!file || !file.type.startsWith('image/')) return;
+    const b64 = await fileToBase64(file);
+    onChange(b64);
+    e.target.value = '';
+  }
+
+  return (
+    <div className="agent-photo-uploader">
+      <input ref={fileRef} type="file" accept="image/*" style={{ display:'none' }} onChange={handleFile}/>
+      {value ? (
+        <div className="agent-photo-preview-wrap">
+          <img src={value} alt="Agent" className="agent-photo-preview"/>
+          <div className="agent-photo-actions">
+            <button className="btn-outline-sm" onClick={() => fileRef.current?.click()}><Upload size={12}/> Change</button>
+            <button className="btn-outline-sm danger" onClick={() => onChange('')}><X size={12}/> Remove</button>
+          </div>
+        </div>
+      ) : (
+        <div className="agent-photo-drop" onClick={() => fileRef.current?.click()} style={{ borderColor: brandColor }}>
+          <UserCircle size={36} style={{ color: brandColor, opacity: .5 }}/>
+          <p className="agent-photo-drop-title">Upload headshot</p>
+          <p className="agent-photo-drop-sub">Click to browse · JPG or PNG · Shown on sign-in page</p>
+        </div>
       )}
     </div>
   );
 }
 
 // ─── Settings Panel ───────────────────────────────────────────────────────────
-function SettingsPanel({ property, docs, onSave, onBack }) {
+function SettingsPanel({ property, docs, onSave, onBack, dark, setDark }) {
   const [p, setP]             = useState({ ...property });
   const [d, setD]             = useState(docs.length ? [...docs] : [{ label: '', url: '' }]);
   const [saved, setSaved]     = useState(false);
@@ -1391,17 +1503,14 @@ function SettingsPanel({ property, docs, onSave, onBack }) {
     setSaved(true); setTimeout(() => setSaved(false), 1500);
   }
 
-  // Convert photo string ↔ array for the PhotoUploader
   const photoList = p.photos ? p.photos.split(',').map(s => s.trim()).filter(Boolean) : [];
   function handlePhotosChange(newList) {
     setP({ ...p, photos: newList.join(','), hero_image: newList[0] || '' });
   }
 
-  // MLS apply callback
   function applyMlsFields(fields) {
     setP(prev => ({ ...prev, ...fields }));
-    setShowMls(false);
-    setTab('property');
+    setShowMls(false); setTab('property');
   }
 
   const TABS = [
@@ -1419,6 +1528,10 @@ function SettingsPanel({ property, docs, onSave, onBack }) {
         <button className="btn-icon" onClick={onBack}><ArrowLeft size={18}/></button>
         <h1>Settings</h1>
         <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+          {/* #5 Dark mode toggle in settings too */}
+          <button className="btn-icon" title={dark ? 'Light mode' : 'Dark mode'} onClick={() => setDark(d => !d)}>
+            {dark ? <Sun size={17}/> : <Moon size={17}/>}
+          </button>
           <button className="btn-mls-trigger" style={{ borderColor: p.brand_color, color: p.brand_color }} onClick={() => setShowMls(true)}>
             <Scan size={14}/> MLS Auto-Fill
           </button>
@@ -1428,16 +1541,8 @@ function SettingsPanel({ property, docs, onSave, onBack }) {
         </div>
       </header>
 
-      {/* MLS Analyzer */}
-      {showMls && (
-        <MlsAnalyzer
-          brandColor={p.brand_color}
-          onApply={applyMlsFields}
-          onClose={() => setShowMls(false)}
-        />
-      )}
+      {showMls && <MlsAnalyzer brandColor={p.brand_color} onApply={applyMlsFields} onClose={() => setShowMls(false)}/>}
 
-      {/* Tabs */}
       <div className="settings-tabs">
         {TABS.map(t => (
           <button key={t.id} className={`settings-tab${tab === t.id ? ' active' : ''}`}
@@ -1453,13 +1558,17 @@ function SettingsPanel({ property, docs, onSave, onBack }) {
         {/* ── Property Tab ── */}
         {tab === 'property' && (
           <div className="settings-section">
-            {/* Quick MLS hint banner */}
             <div className="mls-hint-banner" onClick={() => setShowMls(true)} style={{ borderColor: p.brand_color }}>
               <Sparkles size={14} style={{ color: p.brand_color }}/>
               <span>Have an MLS sheet? Click <strong>MLS Auto-Fill</strong> in the header to auto-populate these fields.</span>
               <ChevronRight size={13} style={{ color: p.brand_color, marginLeft:'auto' }}/>
             </div>
             <div className="settings-grid">
+              {/* #7 Nickname */}
+              <div className="field-group full">
+                <label><Tag size={12}/> Listing Nickname <span className="optional">(internal label)</span></label>
+                <input value={p.nickname || ''} onChange={e=>setP({...p,nickname:e.target.value})} placeholder="e.g. Blue House on Main, Lakefront Property…"/>
+              </div>
               <div className="field-group"><label>Street Address</label><input value={p.address} onChange={e=>setP({...p,address:e.target.value})} placeholder="1234 Main St"/></div>
               <div className="field-group"><label>City, State ZIP</label><input value={p.city} onChange={e=>setP({...p,city:e.target.value})} placeholder="Flagstaff, AZ 86001"/></div>
               <div className="field-group"><label>List Price</label><input value={p.price} onChange={e=>setP({...p,price:e.target.value})} placeholder="$450,000"/></div>
@@ -1476,7 +1585,10 @@ function SettingsPanel({ property, docs, onSave, onBack }) {
         {/* ── Agent Tab ── */}
         {tab === 'agent' && (
           <div className="settings-section">
-            <div className="settings-grid">
+            <h3 className="settings-section-title"><UserCircle size={15}/> Agent Headshot</h3>
+            <p className="settings-hint">Your photo appears on the sign-in page and thank-you screen.</p>
+            <AgentPhotoUploader value={p.agent_photo || ''} onChange={v => setP({...p, agent_photo: v})} brandColor={p.brand_color}/>
+            <div className="settings-grid" style={{ marginTop: 20 }}>
               <div className="field-group"><label>Agent Name</label><input value={p.agent_name} onChange={e=>setP({...p,agent_name:e.target.value})} placeholder="Austin Prettyman"/></div>
               <div className="field-group"><label>Brokerage</label><input value={p.agent_brokerage} onChange={e=>setP({...p,agent_brokerage:e.target.value})} placeholder="Premier Realty"/></div>
               <div className="field-group"><label>Phone</label><input value={p.agent_phone} onChange={e=>setP({...p,agent_phone:e.target.value})} placeholder="928-710-8027"/></div>
@@ -1489,7 +1601,7 @@ function SettingsPanel({ property, docs, onSave, onBack }) {
         {tab === 'docs' && (
           <div className="settings-section">
             <div className="settings-section-header">
-              <p className="settings-hint">Paste direct links to PDFs (Google Drive, Dropbox, etc.). Visitors see these after signing in.</p>
+              <p className="settings-hint">Paste direct links to PDFs. Visitors see these after signing in.</p>
               <button className="btn-outline-sm" onClick={addDoc}><Plus size={13}/> Add Doc</button>
             </div>
             {d.map((doc, i) => (
@@ -1505,11 +1617,7 @@ function SettingsPanel({ property, docs, onSave, onBack }) {
         {/* ── Photos Tab ── */}
         {tab === 'photos' && (
           <div className="settings-section">
-            <PhotoUploader
-              photos={photoList}
-              onChange={handlePhotosChange}
-              brandColor={p.brand_color}
-            />
+            <PhotoUploader photos={photoList} onChange={handlePhotosChange} brandColor={p.brand_color}/>
           </div>
         )}
 
@@ -1520,11 +1628,8 @@ function SettingsPanel({ property, docs, onSave, onBack }) {
             <p className="settings-hint">This color is used throughout the app — buttons, header, accents.</p>
             <div className="color-grid">
               {BRAND_COLORS.map(c => (
-                <button key={c.value}
-                  className={`color-swatch${p.brand_color === c.value ? ' active' : ''}`}
-                  style={{ background: c.value }}
-                  onClick={() => setP({...p, brand_color: c.value})}
-                  title={c.name}>
+                <button key={c.value} className={`color-swatch${p.brand_color === c.value ? ' active' : ''}`}
+                  style={{ background: c.value }} onClick={() => setP({...p, brand_color: c.value})} title={c.name}>
                   {p.brand_color === c.value && <Check size={16} color="white" strokeWidth={3}/>}
                 </button>
               ))}
@@ -1568,10 +1673,31 @@ function QRGenerator({ listingId, property, onBack }) {
   const [customListing, setCustomListing] = useState(listingId === 'default' ? '' : listingId);
   const [finalUrl, setFinalUrl]           = useState(listingId === 'default' ? base : `${base}?listing=${listingId}`);
   const [qrSize, setQrSize]               = useState(256);
+  // #2 Copy link state
+  const [copied, setCopied] = useState(false);
 
   function regenerate() {
     const id = customListing.trim() || 'default';
     setFinalUrl(id === 'default' ? base : `${base}?listing=${id}`);
+  }
+
+  // #2 Copy sign-in link
+  async function copyLink() {
+    try {
+      await navigator.clipboard.writeText(finalUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // fallback
+      const el = document.createElement('textarea');
+      el.value = finalUrl;
+      document.body.appendChild(el);
+      el.select();
+      document.execCommand('copy');
+      document.body.removeChild(el);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
   }
 
   function printQR() {
@@ -1614,7 +1740,14 @@ function QRGenerator({ listingId, property, onBack }) {
           <div ref={qrRef} className="qr-canvas-wrap">
             <QRCodeCanvas value={finalUrl} size={qrSize} bgColor="#ffffff" fgColor={property.brand_color} level="H" includeMargin={true}/>
           </div>
-          <p className="qr-url-label">{finalUrl}</p>
+          {/* #2 URL + copy row */}
+          <div className="qr-url-row">
+            <p className="qr-url-label">{finalUrl}</p>
+            <button className={`qr-copy-btn${copied ? ' copied' : ''}`} onClick={copyLink}
+              style={copied ? { background: '#f0fdf4', borderColor: '#86efac', color: '#166534' } : { borderColor: property.brand_color, color: property.brand_color }}>
+              {copied ? <><Check size={13}/> Copied!</> : <><Copy size={13}/> Copy Link</>}
+            </button>
+          </div>
           <div className="qr-actions">
             <button className="btn-primary" style={{ background: property.brand_color }} onClick={printQR}><Printer size={15}/> Print</button>
             <button className="btn-outline" onClick={downloadQR}><Download size={15}/> Download PNG</button>
