@@ -58,7 +58,7 @@ const DEFAULT_PROPERTY = {
   agent_name: 'Austin Prettyman',
   agent_phone: '928-710-8027',
   agent_email: 'austinprettyman9@gmail.com',
-  agent_brokerage: '',
+  agent_brokerage: 'Re/Max Fine Properties',
   agent_photo: '',
   nickname: '',
   hero_image: '',
@@ -394,7 +394,13 @@ export default function App() {
     new URLSearchParams(window.location.search).has('listing') ? 'signin' : 'home'
   );
   const [authenticated, setAuthenticated] = useState(false);
-  const [property, setProperty]   = useState(() => loadLocal(listingId, 'property', DEFAULT_PROPERTY));
+  const [property, setProperty]   = useState(() => {
+    const stored = loadLocal(listingId, 'property', DEFAULT_PROPERTY);
+    // Migrate: backfill defaults that were added after initial release
+    if (!stored.agent_brokerage) stored.agent_brokerage = DEFAULT_PROPERTY.agent_brokerage;
+    if (!stored.agent_phone)     stored.agent_phone     = DEFAULT_PROPERTY.agent_phone;
+    return stored;
+  });
   const [docs, setDocs]           = useState(() => loadLocal(listingId, 'docs', DEFAULT_DOCS));
   const [leads, setLeads]         = useState([]);
   const [leadsLoading, setLeadsLoading] = useState(false);
@@ -704,8 +710,18 @@ function SignInForm({ property, leads, onSubmit, onAdminClick }) {
               <p className="agent-brokerage">{property.agent_brokerage}</p>
             </div>
             <div className="agent-contact">
-              {property.agent_phone && <a href={`tel:${property.agent_phone}`} className="contact-link"><Phone size={14}/></a>}
-              {property.agent_email && <a href={`mailto:${property.agent_email}`} className="contact-link"><Mail size={14}/></a>}
+              {property.agent_phone && (
+                <a href={`tel:${property.agent_phone}`} className="contact-link"
+                  onClick={e => e.stopPropagation()}>
+                  <Phone size={14}/>
+                </a>
+              )}
+              {property.agent_email && (
+                <a href={`mailto:${property.agent_email}`} className="contact-link"
+                  onClick={e => e.stopPropagation()}>
+                  <Mail size={14}/>
+                </a>
+              )}
             </div>
           </div>
         )}
@@ -721,7 +737,7 @@ function SignInForm({ property, leads, onSubmit, onAdminClick }) {
 
 // ─── Doc Viewer (inline PDF / image with save-to-gallery) ────────────────────
 function DocViewer({ doc, onActivity }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(true); // open by default so visitors see docs immediately
   const label = doc.label || doc.name || 'Document';
   const isImage = doc.type === 'image';
   const isPdf   = doc.type === 'pdf' || (!isImage && (doc.data || doc.url));
@@ -904,8 +920,18 @@ function ThankYou({ visitor, property, docs, onBack }) {
               <p className="agent-name">{property.agent_name}</p>
               <p className="agent-brokerage">{property.agent_brokerage}</p>
               <div className="agent-links">
-                {property.agent_phone && <a href={`tel:${property.agent_phone}`} className="btn-outline-sm"><Phone size={13}/> {property.agent_phone}</a>}
-                {property.agent_email && <a href={`mailto:${property.agent_email}`} className="btn-outline-sm"><Mail size={13}/> {property.agent_email}</a>}
+                {property.agent_phone && (
+                  <a href={`tel:${property.agent_phone}`} className="btn-outline-sm"
+                    onClick={e => e.stopPropagation()}>
+                    <Phone size={13}/> {property.agent_phone}
+                  </a>
+                )}
+                {property.agent_email && (
+                  <a href={`mailto:${property.agent_email}`} className="btn-outline-sm"
+                    onClick={e => e.stopPropagation()}>
+                    <Mail size={13}/> {property.agent_email}
+                  </a>
+                )}
               </div>
             </div>
           </div>
