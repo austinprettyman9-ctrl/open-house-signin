@@ -768,45 +768,63 @@ function SignInForm({ property, leads, onSubmit, onAdminClick }) {
   );
 }
 
-// ─── Doc Viewer (inline PDF / image with save-to-gallery) ────────────────────
+// ─── Doc Viewer (inline PDF / image with open & download) ────────────────────
 function DocViewer({ doc, onActivity }) {
-  const [expanded, setExpanded] = useState(true); // open by default so visitors see docs immediately
-  const label = doc.label || doc.name || 'Document';
+  const [expanded, setExpanded] = useState(false);
+  const [blobUrl,  setBlobUrl]  = useState(null);   // converted from base64 for PDFs
+  const label   = doc.label || doc.name || 'Document';
   const isImage = doc.type === 'image';
-  const isPdf   = doc.type === 'pdf' || (!isImage && (doc.data || doc.url));
   const src     = doc.data || doc.url;
-
-  // Determine if it's an uploaded file (base64) or an external URL
   const isBase64 = src && src.startsWith('data:');
 
-  // "Save to Photos" — creates a temporary <a download> click
-  async function saveToGallery(e) {
+  // Convert base64 → blob URL once when first expanded (browsers block base64 in iframes/objects)
+  useEffect(() => {
+    if (!expanded || !isBase64 || isImage) return;
+    if (blobUrl) return; // already done
+    try {
+      const [header, b64] = src.split(',');
+      const mime = header.match(/:(.*?);/)?.[1] || 'application/pdf';
+      const binary = atob(b64);
+      const bytes  = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const blob = new Blob([bytes], { type: mime });
+      setBlobUrl(URL.createObjectURL(blob));
+    } catch (err) {
+      console.error('PDF blob conversion failed', err);
+    }
+    return () => {}; // keep blob URL alive for session
+  }, [expanded, isBase64, isImage, src]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Direct download
+  async function handleDownload(e) {
     e.stopPropagation();
     if (onActivity) onActivity();
-
-    if (isBase64) {
-      // Direct download from base64
+    if (blobUrl) {
       const a = document.createElement('a');
-      a.href = src;
-      a.download = doc.name || (isImage ? `${label}.jpg` : `${label}.pdf`);
-      a.click();
+      a.href = blobUrl; a.download = doc.name || label; a.click();
       return;
     }
-
-    // For external URLs — try fetch then download (may be blocked by CORS)
+    if (isBase64) {
+      const a = document.createElement('a');
+      a.href = src; a.download = doc.name || (isImage ? `${label}.jpg` : `${label}.pdf`); a.click();
+      return;
+    }
     try {
       const res  = await fetch(src);
       const blob = await res.blob();
       const url  = URL.createObjectURL(blob);
       const a    = document.createElement('a');
-      a.href     = url;
-      a.download = doc.name || label;
-      a.click();
+      a.href = url; a.download = doc.name || label; a.click();
       setTimeout(() => URL.revokeObjectURL(url), 2000);
-    } catch {
-      // Fallback: just open in new tab
-      window.open(src, '_blank');
-    }
+    } catch { window.open(src, '_blank'); }
+  }
+
+  // Open full-screen in new tab (most reliable for PDFs on mobile)
+  function handleOpen(e) {
+    e.stopPropagation();
+    if (onActivity) onActivity();
+    if (blobUrl) { window.open(blobUrl, '_blank'); return; }
+    if (src)     { window.open(src, '_blank'); }
   }
 
   function toggle(e) {
@@ -815,41 +833,67 @@ function DocViewer({ doc, onActivity }) {
     setExpanded(x => !x);
   }
 
+  // Render URL for the embed
+  const embedSrc = isBase64
+    ? (blobUrl || null)                                          // blob URL for base64 files
+    : (src ? `https://docs.google.com/viewer?url=${encodeURIComponent(src)}&embedded=true` : null); // Google viewer for external
+
   return (
     <div className={`doc-viewer-card${expanded ? ' doc-viewer-card--open' : ''}`}>
-      {/* Header row — always visible */}
+      {/* Header row */}
       <div className="doc-viewer-header" onClick={toggle}>
         <div className="doc-viewer-icon">
           {isImage ? <Image size={18}/> : <FileText size={18}/>}
         </div>
         <span className="doc-viewer-label">{label}</span>
         <div className="doc-viewer-actions" onClick={e => e.stopPropagation()}>
-          <button className="doc-save-btn" onClick={saveToGallery} title="Save to device">
+          <button className="doc-save-btn" onClick={handleDownload} title="Download">
             <Download size={14}/> Save
           </button>
-          {!isBase64 && src && (
-            <a className="doc-open-btn" href={src} target="_blank" rel="noopener noreferrer"
-               onClick={e => { e.stopPropagation(); if (onActivity) onActivity(); }}>
-              <Link size={14}/> Open
-            </a>
-          )}
+          <button className="doc-open-btn" onClick={handleOpen} title="Open full screen">
+            <Link size={14}/> Open
+          </button>
         </div>
         <ChevronRight size={15} className={`doc-viewer-chevron${expanded ? ' doc-viewer-chevron--open' : ''}`}/>
       </div>
 
-      {/* Expanded inline preview */}
+      {/* Expanded preview */}
       {expanded && src && (
         <div className="doc-viewer-body">
           {isImage ? (
             <img src={src} alt={label} className="doc-viewer-img"
               onError={e => { e.target.style.display='none'; }}/>
+          ) : embedSrc ? (
+            <>
+              <object
+                data={embedSrc}
+                type="application/pdf"
+                className="doc-viewer-iframe"
+                aria-label={label}>
+                {/* Fallback when <object> fails (mobile Safari, etc.) */}
+                <div className="doc-viewer-fallback">
+                  <FileText size={36} style={{ color:'var(--slate-xs)' }}/>
+                  <p>PDF preview not available in this browser.</p>
+                  <button className="doc-save-btn" style={{ marginTop:10 }} onClick={handleOpen}>
+                    <Link size={14}/> Open PDF
+                  </button>
+                </div>
+              </object>
+              {/* Always-visible open button below the embed */}
+              <div className="doc-viewer-open-bar">
+                <button className="doc-open-btn doc-open-btn--full" onClick={handleOpen}>
+                  <Link size={14}/> Open full screen
+                </button>
+                <button className="doc-save-btn" onClick={handleDownload}>
+                  <Download size={14}/> Download
+                </button>
+              </div>
+            </>
           ) : (
-            <iframe
-              src={isBase64 ? src : `https://docs.google.com/viewer?url=${encodeURIComponent(src)}&embedded=true`}
-              title={label}
-              className="doc-viewer-iframe"
-              frameBorder="0"
-            />
+            <div className="doc-viewer-fallback">
+              <FileText size={36} style={{ color:'var(--slate-xs)' }}/>
+              <p>Preparing PDF…</p>
+            </div>
           )}
         </div>
       )}
@@ -1680,92 +1724,155 @@ function AgentPhotoUploader({ value, onChange, brandColor }) {
   );
 }
 
-// ─── Doc Upload Row ───────────────────────────────────────────────────────────
+// ─── Doc Uploader (photo-tab style) ─────────────────────────────────────────
 // Each doc: { label, url, data (base64), type ('pdf'|'image'|'url'), name }
-function DocUploadRow({ doc, onChange, onRemove }) {
-  const fileRef  = useRef(null);
-  const [mode, setMode] = useState(doc.data ? 'file' : 'url');
-  const [loading, setLoading] = useState(false);
+function DocUploader({ docs, onChange, brandColor }) {
+  const fileRef   = useRef(null);
+  const [dragOver, setDragOver] = useState(false);
+  const [urlInput, setUrlInput] = useState('');
+  const [urlLabel, setUrlLabel] = useState('');
+  const [tab, setTab]           = useState('upload');
+  const [loading, setLoading]   = useState(false);
 
-  async function handleFile(e) {
-    const file = e.target.files[0];
+  async function addFile(file) {
     if (!file) return;
     setLoading(true);
     const reader = new FileReader();
     reader.onload = (ev) => {
-      const data = ev.target.result; // data:application/pdf;base64,...
-      const type = file.type.startsWith('image/') ? 'image' : 'pdf';
-      onChange('data',  data);
-      onChange('type',  type);
-      onChange('name',  file.name);
-      if (!doc.label) onChange('label', file.name.replace(/\.[^.]+$/, ''));
+      const data  = ev.target.result;
+      const type  = file.type.startsWith('image/') ? 'image' : 'pdf';
+      const label = file.name.replace(/\.[^.]+$/, '');
+      onChange([...docs, { label, data, type, name: file.name, url: '' }]);
       setLoading(false);
     };
     reader.readAsDataURL(file);
   }
 
-  function clearFile() {
-    onChange('data', '');
-    onChange('type', 'url');
-    onChange('name', '');
-    setMode('url');
-    if (fileRef.current) fileRef.current.value = '';
+  async function handleFileInput(e) {
+    const files = Array.from(e.target.files || []);
+    for (const f of files) await addFile(f);
+    e.target.value = '';
+  }
+
+  function handleDragOver(e) { e.preventDefault(); setDragOver(true); }
+  function handleDragLeave()  { setDragOver(false); }
+  async function handleDrop(e) {
+    e.preventDefault(); setDragOver(false);
+    const files = Array.from(e.dataTransfer.files || []);
+    for (const f of files) await addFile(f);
+  }
+
+  function addUrl() {
+    const u = urlInput.trim();
+    if (!u) return;
+    const label = urlLabel.trim() || u.split('/').pop().split('?')[0] || 'Document';
+    // Guess type from URL
+    const type = /\.(jpg|jpeg|png|gif|webp)/i.test(u) ? 'image' : 'url';
+    onChange([...docs, { label, url: u, data: '', type, name: label }]);
+    setUrlInput(''); setUrlLabel('');
+  }
+
+  function removeDoc(i) { onChange(docs.filter((_, idx) => idx !== i)); }
+
+  function updateLabel(i, val) {
+    const next = [...docs]; next[i] = { ...next[i], label: val }; onChange(next);
   }
 
   return (
-    <div className="doc-upload-row">
-      {/* Label */}
-      <input
-        className="doc-label-input"
-        placeholder="Label (e.g. MLS Sheet, Floor Plan)"
-        value={doc.label || ''}
-        onChange={e => onChange('label', e.target.value)}
-      />
-
-      {/* Mode toggle */}
-      <div className="doc-mode-tabs">
-        <button type="button"
-          className={`doc-mode-tab${mode === 'file' ? ' active' : ''}`}
-          onClick={() => setMode('file')}>
-          <Upload size={12}/> Upload File
+    <div className="doc-uploader">
+      {/* Tab bar — mirrors photo tab */}
+      <div className="photo-upload-tabs">
+        <button className={`photo-tab${tab === 'upload' ? ' active' : ''}`}
+          onClick={() => setTab('upload')}
+          style={tab === 'upload' ? { color: brandColor, borderBottomColor: brandColor } : {}}>
+          <Upload size={13}/> Upload File
         </button>
-        <button type="button"
-          className={`doc-mode-tab${mode === 'url' ? ' active' : ''}`}
-          onClick={() => setMode('url')}>
-          <Link size={12}/> URL Link
+        <button className={`photo-tab${tab === 'url' ? ' active' : ''}`}
+          onClick={() => setTab('url')}
+          style={tab === 'url' ? { color: brandColor, borderBottomColor: brandColor } : {}}>
+          <Link size={13}/> Add by URL
         </button>
       </div>
 
-      {mode === 'file' ? (
-        doc.data ? (
-          <div className="doc-file-preview">
-            {doc.type === 'image'
-              ? <img src={doc.data} alt={doc.name} className="doc-thumb"/>
-              : <div className="doc-pdf-chip"><FileText size={14}/> {doc.name || 'PDF'}</div>
-            }
-            <button type="button" className="btn-outline-sm danger" onClick={clearFile}>
-              <X size={12}/> Remove
-            </button>
-          </div>
-        ) : (
-          <div className="doc-drop-zone" onClick={() => fileRef.current?.click()}>
-            <input ref={fileRef} type="file" accept=".pdf,image/*" style={{display:'none'}} onChange={handleFile}/>
-            {loading
-              ? <><Loader size={16} className="spin"/> Processing…</>
-              : <><Upload size={16}/> Click to upload PDF or image</>
-            }
-          </div>
-        )
-      ) : (
-        <input
-          className="doc-url-input"
-          placeholder="https://drive.google.com/…"
-          value={doc.url || ''}
-          onChange={e => onChange('url', e.target.value)}
-        />
+      {/* Drop zone */}
+      {tab === 'upload' && (
+        <div
+          className={`photo-drop-zone${dragOver ? ' drag-over' : ''}`}
+          style={dragOver ? { borderColor: brandColor, background: `color-mix(in srgb, ${brandColor} 6%, white)` } : {}}
+          onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}
+          onClick={() => fileRef.current?.click()}>
+          <input ref={fileRef} type="file" accept=".pdf,image/*" multiple style={{ display:'none' }} onChange={handleFileInput}/>
+          {loading
+            ? <><Loader size={28} className="spin" style={{ color: brandColor, opacity:.5 }}/><p className="photo-drop-title">Processing…</p></>
+            : <><FileText size={28} style={{ color: brandColor, opacity:.5 }}/>
+               <p className="photo-drop-title">Drop PDFs or images here, or click to browse</p>
+               <p className="photo-drop-sub">PDF, JPG, PNG supported · Files stored locally</p></>
+          }
+        </div>
       )}
 
-      <button className="btn-icon danger" onClick={onRemove}><Trash2 size={15}/></button>
+      {/* URL entry */}
+      {tab === 'url' && (
+        <div className="photo-url-area">
+          <div className="field-group">
+            <label>Label</label>
+            <input placeholder="e.g. Floor Plan, Disclosure" value={urlLabel} onChange={e => setUrlLabel(e.target.value)}/>
+          </div>
+          <div className="field-group">
+            <label>URL</label>
+            <input placeholder="https://drive.google.com/…" value={urlInput} onChange={e => setUrlInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') addUrl(); }}/>
+          </div>
+          <button className="btn-primary-sm" style={{ background: brandColor }} onClick={addUrl} disabled={!urlInput.trim()}>
+            <Plus size={14}/> Add Link
+          </button>
+        </div>
+      )}
+
+      {/* Doc grid — mirrors photo thumb grid */}
+      {docs.length > 0 && (
+        <div className="doc-thumb-grid">
+          {docs.map((doc, i) => (
+            <div key={i} className="doc-thumb-item">
+              {/* Preview */}
+              <div className="doc-thumb-preview">
+                {doc.type === 'image' && (doc.data || doc.url)
+                  ? <img src={doc.data || doc.url} alt={doc.label} className="doc-thumb-img"
+                      onError={e => { e.target.style.display='none'; }}/>
+                  : <div className="doc-thumb-icon">
+                      {doc.type === 'pdf' || doc.data
+                        ? <FileText size={28} style={{ color: brandColor }}/>
+                        : <Link size={24} style={{ color: brandColor }}/>}
+                      <span className="doc-thumb-ext">
+                        {doc.type === 'pdf' ? 'PDF' : doc.type === 'image' ? 'IMG' : 'URL'}
+                      </span>
+                    </div>
+                }
+              </div>
+              {/* Editable label */}
+              <input
+                className="doc-thumb-label-input"
+                value={doc.label || ''}
+                onChange={e => updateLabel(i, e.target.value)}
+                placeholder="Label"
+                onClick={e => e.stopPropagation()}
+              />
+              {/* Remove button */}
+              <button className="photo-thumb-remove" onClick={() => removeDoc(i)} title="Remove">
+                <X size={12}/>
+              </button>
+            </div>
+          ))}
+          {/* Add more button */}
+          <div className="photo-thumb-add" onClick={() => { setTab('upload'); fileRef.current?.click(); }}
+            style={{ borderColor: brandColor, color: brandColor }}>
+            <Plus size={20}/><span>Add</span>
+          </div>
+        </div>
+      )}
+      {docs.length > 0 && (
+        <p className="photo-count-note">{docs.length} doc{docs.length !== 1 ? 's' : ''} · Visitors can open &amp; download after signing in</p>
+      )}
     </div>
   );
 }
@@ -2036,7 +2143,7 @@ function SettingsPanel({ property, docs, onSave, onBack, dark, setDark }) {
 
   function handleSave() {
     onSave(p, d.filter(doc => doc.label || doc.url || doc.data));
-    setSaved(true); setTimeout(() => setSaved(false), 1500);
+    setSaved(true); setTimeout(() => setSaved(false), 2000);
   }
 
   const photoList = p.photos ? p.photos.split(',').map(s => s.trim()).filter(Boolean) : [];
@@ -2140,18 +2247,12 @@ function SettingsPanel({ property, docs, onSave, onBack, dark, setDark }) {
         {/* ── Docs Tab ── */}
         {tab === 'docs' && (
           <div className="settings-section">
-            <div className="settings-section-header">
-              <div>
-                <p className="settings-hint" style={{marginBottom:2}}>Upload PDFs or images — they display inline after sign-in and visitors can save them to their photo gallery.</p>
-                <p className="settings-hint" style={{fontSize:'0.72rem',color:'var(--slate-xs)'}}>Files are stored locally. Keep PDFs under 2 MB each for best performance.</p>
-              </div>
-              <button className="btn-outline-sm" onClick={addDoc}><Plus size={13}/> Add Doc</button>
-            </div>
-            {d.map((doc, i) => (
-              <DocUploadRow key={i} doc={doc}
-                onChange={(field, val) => updateDoc(i, field, val)}
-                onRemove={() => removeDoc(i)}/>
-            ))}
+            <p className="settings-hint">Upload PDFs or images — visitors can open and download them after signing in.</p>
+            <DocUploader
+              docs={d}
+              onChange={setD}
+              brandColor={p.brand_color}
+            />
           </div>
         )}
 
