@@ -313,6 +313,20 @@ function useOpenHouseCountdown(dateStr, timeStr) {
   return label;
 }
 
+// ─── Ripple helper ───────────────────────────────────────────────────────────
+function addRipple(e) {
+  const btn  = e.currentTarget;
+  const rect = btn.getBoundingClientRect();
+  const size = Math.max(rect.width, rect.height) * 2;
+  const x    = e.clientX - rect.left - size / 2;
+  const y    = e.clientY - rect.top  - size / 2;
+  const rip  = document.createElement('span');
+  rip.className = 'btn-ripple';
+  rip.style.cssText = `width:${size}px;height:${size}px;left:${x}px;top:${y}px`;
+  btn.appendChild(rip);
+  rip.addEventListener('animationend', () => rip.remove());
+}
+
 // ─── #1 Toast System ─────────────────────────────────────────────────────────
 function ToastContainer({ toasts, onDismiss }) {
   return (
@@ -560,7 +574,7 @@ function ListingsHome({ allListings, onAddListing, onViewSignIn, currentListing 
   }
 
   return (
-    <div className="home-page">
+    <div className="home-page page-enter">
       <div className="home-header">
         <div className="home-logo"><Home size={24}/></div>
         <h1>Open House Sign-In</h1>
@@ -646,7 +660,7 @@ function SignInForm({ property, leads, onSubmit, onAdminClick }) {
   }
 
   return (
-    <div className="signin-page">
+    <div className="signin-page page-enter">
       <div className="signin-hero" style={{ background: `linear-gradient(135deg, ${property.brand_color}cc 0%, ${property.brand_color} 100%)` }}>
         {property.hero_image && <img src={property.hero_image} alt="Property" className="hero-img"/>}
         <div className="hero-overlay">
@@ -726,7 +740,8 @@ function SignInForm({ property, leads, onSubmit, onAdminClick }) {
             <span>I am a first-time home buyer</span>
           </label>
           <button type="submit" className="btn-primary" disabled={submitting}
-            style={{ background: property.brand_color }}>
+            style={{ background: property.brand_color }}
+            onClick={!submitting ? addRipple : undefined}>
             {submitting ? 'Signing in…' : <>View Property Details <ChevronRight size={16}/></>}
           </button>
         </form>
@@ -771,29 +786,33 @@ function SignInForm({ property, leads, onSubmit, onAdminClick }) {
 // ─── Doc Viewer (inline PDF / image with open & download) ────────────────────
 function DocViewer({ doc, onActivity }) {
   const [expanded, setExpanded] = useState(false);
-  const [blobUrl,  setBlobUrl]  = useState(null);   // converted from base64 for PDFs
-  const label   = doc.label || doc.name || 'Document';
-  const isImage = doc.type === 'image';
-  const src     = doc.data || doc.url;
+  const [blobUrl,  setBlobUrl]  = useState(null);
+  const label    = doc.label || doc.name || 'Document';
+  const isImage  = doc.type === 'image';
+  const src      = doc.data || doc.url;
   const isBase64 = src && src.startsWith('data:');
 
-  // Convert base64 → blob URL once when first expanded (browsers block base64 in iframes/objects)
+  // Convert base64 → blob URL once on mount; keep it alive for the lifetime of this viewer
+  const blobUrlRef = useRef(null);
   useEffect(() => {
-    if (!expanded || !isBase64 || isImage) return;
-    if (blobUrl) return; // already done
+    if (!isBase64 || isImage || !src) return;
+    // Only create once
+    if (blobUrlRef.current) { setBlobUrl(blobUrlRef.current); return; }
     try {
       const [header, b64] = src.split(',');
-      const mime = header.match(/:(.*?);/)?.[1] || 'application/pdf';
+      const mime   = header.match(/:(.*?);/)?.[1] || 'application/pdf';
       const binary = atob(b64);
       const bytes  = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
       const blob = new Blob([bytes], { type: mime });
-      setBlobUrl(URL.createObjectURL(blob));
+      const url  = URL.createObjectURL(blob);
+      blobUrlRef.current = url;
+      setBlobUrl(url);
+      // No cleanup revoke — keep alive so Open button always works
     } catch (err) {
       console.error('PDF blob conversion failed', err);
     }
-    return () => {}; // keep blob URL alive for session
-  }, [expanded, isBase64, isImage, src]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [src]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Direct download
   async function handleDownload(e) {
@@ -819,12 +838,30 @@ function DocViewer({ doc, onActivity }) {
     } catch { window.open(src, '_blank'); }
   }
 
-  // Open full-screen in new tab (most reliable for PDFs on mobile)
+  // Open full-screen in new tab — always creates a fresh blob URL for base64 PDFs
   function handleOpen(e) {
     e.stopPropagation();
     if (onActivity) onActivity();
-    if (blobUrl) { window.open(blobUrl, '_blank'); return; }
-    if (src)     { window.open(src, '_blank'); }
+    if (isBase64 && !isImage) {
+      // Use cached blob URL or build a fresh one
+      const url = blobUrlRef.current || blobUrl;
+      if (url) { window.open(url, '_blank'); return; }
+      // Last resort: build a new one right now
+      try {
+        const [header, b64] = src.split(',');
+        const mime   = header.match(/:(.*?);/)?.[1] || 'application/pdf';
+        const binary = atob(b64);
+        const bytes  = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        const blob    = new Blob([bytes], { type: mime });
+        const freshUrl = URL.createObjectURL(blob);
+        blobUrlRef.current = freshUrl;
+        setBlobUrl(freshUrl);
+        window.open(freshUrl, '_blank');
+      } catch { window.open(src, '_blank'); }
+      return;
+    }
+    if (src) window.open(src, '_blank');
   }
 
   function toggle(e) {
@@ -901,16 +938,50 @@ function DocViewer({ doc, onActivity }) {
   );
 }
 
+// ─── Confetti burst ───────────────────────────────────────────────────────────
+function Confetti() {
+  const pieces = Array.from({ length: 18 }, (_, i) => ({
+    id: i,
+    color: ['#2563eb','#16a34a','#7c3aed','#f59e0b','#e11d48','#06b6d4'][i % 6],
+    x: (Math.random() - 0.5) * 180,
+    delay: Math.random() * 0.5,
+    rot: Math.random() * 720 - 360,
+  }));
+  return (
+    <div className="confetti-wrap" aria-hidden>
+      {pieces.map(p => (
+        <div key={p.id} className="confetti-piece" style={{
+          background: p.color,
+          left: p.x, top: 0,
+          animationDelay: `${p.delay}s`,
+          transform: `rotate(${p.rot}deg)`,
+          width: 6 + Math.random() * 6,
+          height: 6 + Math.random() * 6,
+          borderRadius: Math.random() > 0.5 ? '50%' : '2px',
+        }}/>
+      ))}
+    </div>
+  );
+}
+
 // ─── Thank You / Property Details ─────────────────────────────────────────────
 function ThankYou({ visitor, property, docs, onBack }) {
   const [countdown, setCountdown] = useState(RESET_SECONDS);
   const [photoIdx, setPhotoIdx]   = useState(0);
+  const [showConfetti, setShowConfetti] = useState(!visitor?.returning);
 
   useEffect(() => {
     if (countdown <= 0) { onBack(); return; }
     const t = setTimeout(() => setCountdown(c => c - 1), 1000);
     return () => clearTimeout(t);
   }, [countdown]);
+
+  useEffect(() => {
+    if (showConfetti) {
+      const t = setTimeout(() => setShowConfetti(false), 1800);
+      return () => clearTimeout(t);
+    }
+  }, [showConfetti]);
 
   function handleActivity() { setCountdown(RESET_SECONDS); }
 
@@ -919,9 +990,12 @@ function ThankYou({ visitor, property, docs, onBack }) {
     : [];
 
   return (
-    <div className="thankyou-page" onClick={handleActivity} onTouchStart={handleActivity}>
+    <div className="thankyou-page page-enter" onClick={handleActivity} onTouchStart={handleActivity}>
       <div className="thankyou-header" style={{ background: `linear-gradient(135deg, ${property.brand_color}dd, ${property.brand_color})` }}>
-        <div className="check-circle"><Check size={28} strokeWidth={3}/></div>
+        <div className="check-circle" style={{ position:'relative' }}>
+          <Check size={30} strokeWidth={3}/>
+          {showConfetti && <Confetti/>}
+        </div>
         {visitor?.returning
           ? <><h2>Welcome back, {visitor?.name?.split(' ')[0]}!</h2><p>You're already signed in.</p></>
           : <><h2>Thanks, {visitor?.name?.split(' ')[0]}!</h2><p>You're signed in. Enjoy the open house!</p></>}
@@ -1034,7 +1108,7 @@ function AdminLogin({ password: correctPassword, onSuccess, onBack }) {
   }
 
   return (
-    <div className="admin-login-page">
+    <div className="admin-login-page page-enter">
       <form onSubmit={handleLogin} className="login-card">
         <div className="login-logo"><Settings size={28}/></div>
         <h2>Agent Login</h2>
@@ -1050,7 +1124,7 @@ function AdminLogin({ password: correctPassword, onSuccess, onBack }) {
           </div>
           {error && <span className="error-msg">{error}</span>}
         </div>
-        <button type="submit" className="btn-primary">Login</button>
+        <button type="submit" className="btn-primary" onClick={addRipple}>Login</button>
         <button type="button" className="btn-ghost" onClick={onBack}>← Back to Sign-In</button>
       </form>
     </div>
@@ -1101,7 +1175,7 @@ function Dashboard({ property, leads, loading, dbError, listingId, onRefresh, on
   };
 
   return (
-    <div className="admin-page">
+    <div className="admin-page page-enter">
       <header className="admin-header">
         <div className="admin-header-left">
           <div className="admin-logo-badge" style={{ background: property.brand_color }}><Home size={18}/></div>
@@ -2166,7 +2240,7 @@ function SettingsPanel({ property, docs, onSave, onBack, dark, setDark }) {
   ];
 
   return (
-    <div className="settings-page">
+    <div className="settings-page page-enter">
       <header className="settings-header">
         <button className="btn-icon" onClick={onBack}><ArrowLeft size={18}/></button>
         <h1>Settings</h1>
