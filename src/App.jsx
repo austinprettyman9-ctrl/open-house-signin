@@ -1069,10 +1069,11 @@ function Dashboard({ property, leads, loading, dbError, listingId, onRefresh, on
           </div>
         </div>
         <div className="admin-header-actions">
-          {/* #5 Dark mode toggle */}
+          {/* #5 Dark mode toggle — hidden on ≤380px via CSS */}
           <button className="btn-icon" title={dark ? 'Light mode' : 'Dark mode'} onClick={() => setDark(d => !d)}>
             {dark ? <Sun size={17}/> : <Moon size={17}/>}
           </button>
+          {/* Analytics — hidden on ≤380px via CSS */}
           <button className="btn-icon" title="Analytics" onClick={onAnalytics}><BarChart2 size={18}/></button>
           <button className="btn-icon" title="QR Code" onClick={onQR}><QrCode size={18}/></button>
           <button className="btn-icon" title="Settings" onClick={onSettings}><Settings size={18}/></button>
@@ -1162,37 +1163,65 @@ function Dashboard({ property, leads, loading, dbError, listingId, onRefresh, on
           ) : filtered.length === 0 ? (
             <div className="empty-state"><Users size={40} className="empty-icon"/><p>No leads yet</p></div>
           ) : (
-            <div className="table-wrap">
-              <table className="leads-table">
-                <thead>
-                  <tr><th>#</th><th>Name</th><th>Email</th><th>Phone</th><th>Interest</th><th>Notes</th><th>Signed In</th></tr>
-                </thead>
-                <tbody>
-                  {/* #9 Staggered row animations */}
-                  {filtered.map((l, i) => (
-                    <tr key={l.id} className="lead-row" onClick={() => setSelectedLead(l)}
-                      style={{ animationDelay: `${i * 30}ms` }}>
-                      <td className="lead-num">{i + 1}</td>
-                      <td className="lead-name">
-                        <div className="lead-avatar" style={{ background: property.brand_color }}>{l.name?.charAt(0)?.toUpperCase()}</div>
-                        <div>{l.name}{l.first_time_buyer && <span className="ftb-badge">1st time</span>}</div>
-                      </td>
-                      <td><a href={`mailto:${l.email}`} className="table-link" onClick={e => e.stopPropagation()}>{l.email}</a></td>
-                      <td>{l.phone || <span className="muted">—</span>}</td>
-                      <td>
+            <>
+              {/* Desktop table */}
+              <div className="table-wrap table-wrap--desktop">
+                <table className="leads-table">
+                  <thead>
+                    <tr><th>#</th><th>Name</th><th>Email</th><th>Phone</th><th>Interest</th><th>Notes</th><th>Signed In</th></tr>
+                  </thead>
+                  <tbody>
+                    {filtered.map((l, i) => (
+                      <tr key={l.id} className="lead-row" onClick={() => setSelectedLead(l)}
+                        style={{ animationDelay: `${i * 30}ms` }}>
+                        <td className="lead-num">{i + 1}</td>
+                        <td className="lead-name">
+                          <div className="lead-avatar" style={{ background: property.brand_color }}>{l.name?.charAt(0)?.toUpperCase()}</div>
+                          <div>{l.name}{l.first_time_buyer && <span className="ftb-badge">1st time</span>}</div>
+                        </td>
+                        <td><a href={`mailto:${l.email}`} className="table-link" onClick={e => e.stopPropagation()}>{l.email}</a></td>
+                        <td>{l.phone || <span className="muted">—</span>}</td>
+                        <td>
+                          {l.interest && (
+                            <span className="interest-pill" style={{ background: interestColor[l.interest] + '22', color: interestColor[l.interest] }}>
+                              {interestLabel[l.interest] || l.interest}
+                            </span>
+                          )}
+                        </td>
+                        <td>{l.notes ? <span className="has-note"><MessageSquare size={13}/></span> : <span className="add-note muted"><Plus size={12}/> note</span>}</td>
+                        <td className="muted">{new Date(l.created_at).toLocaleString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {/* Mobile card list */}
+              <div className="leads-card-list">
+                {filtered.map((l, i) => (
+                  <div key={l.id} className="lead-card-row" onClick={() => setSelectedLead(l)}
+                    style={{ animationDelay: `${i * 30}ms` }}>
+                    <div className="lead-avatar" style={{ background: property.brand_color, flexShrink:0 }}>{l.name?.charAt(0)?.toUpperCase()}</div>
+                    <div className="lead-card-body">
+                      <div className="lead-card-name">
+                        {l.name}
+                        {l.first_time_buyer && <span className="ftb-badge">1st</span>}
                         {l.interest && (
-                          <span className="interest-pill" style={{ background: interestColor[l.interest] + '22', color: interestColor[l.interest] }}>
+                          <span className="interest-pill" style={{ background: interestColor[l.interest] + '22', color: interestColor[l.interest], marginLeft: 4 }}>
                             {interestLabel[l.interest] || l.interest}
                           </span>
                         )}
-                      </td>
-                      <td>{l.notes ? <span className="has-note"><MessageSquare size={13}/></span> : <span className="add-note muted"><Plus size={12}/> note</span>}</td>
-                      <td className="muted">{new Date(l.created_at).toLocaleString()}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                      </div>
+                      <div className="lead-card-meta">
+                        <a href={`mailto:${l.email}`} className="table-link" onClick={e => e.stopPropagation()}>{l.email}</a>
+                        {l.phone && <span> · {l.phone}</span>}
+                      </div>
+                      <div className="lead-card-time muted">{new Date(l.created_at).toLocaleString()}</div>
+                    </div>
+                    <ChevronRight size={14} style={{ color:'var(--slate-xs)', flexShrink:0 }}/>
+                  </div>
+                ))}
+              </div>
+            </>
           )}
         </div>
       </div>
